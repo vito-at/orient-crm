@@ -34,6 +34,10 @@ export interface PlanRowView {
   countedFrom: string | null;
   /** день выплаты зарплаты; null — в конце месяца */
   payDay?: number | null;
+  /** последний рабочий день (YYYY-MM-DD), если уволен */
+  leftAt?: string | null;
+  /** оклад за отработанные дни периода */
+  baseDays?: { worked: number; total: number } | null;
   /** период расчёта (ISO): to — не включая */
   period?: { from: string; to: string };
   paid: number;
@@ -253,6 +257,7 @@ function EditDialog({ row, month, onClose }: { row: PlanRowView; month: string; 
     planBonusPct: String(row.terms.bonusPct),
     commissionFrom: row.terms.from,
     payDay: row.payDay ? String(row.payDay) : "",
+    leftAt: row.leftAt ?? "",
   });
   const set = (k: keyof typeof v) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setV({ ...v, [k]: e.target.value });
   function save(e: React.FormEvent) {
@@ -309,8 +314,12 @@ function EditDialog({ row, month, onClose }: { row: PlanRowView; month: string; 
             <Field label={t("plans.payDay")}>
               <Input type="number" min={1} max={28} value={v.payDay} onChange={set("payDay")} placeholder={t("plans.payDayEnd")} />
             </Field>
+            <Field label={t("plans.leftAt")}>
+              <Input type="date" value={v.leftAt} onChange={set("leftAt")} />
+            </Field>
           </div>
           <p className="text-xs text-muted-foreground">{t("plans.payDayHint")}</p>
+          <p className="text-xs text-muted-foreground">{t("plans.leftAtHint")}</p>
           <p className="text-xs text-muted-foreground">{t("plans.termsHint")}</p>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={onClose}>
@@ -369,7 +378,8 @@ export function PlansTable({ rows, month, editable }: { rows: PlanRowView[]; mon
                       {t("plans.bdOpen")}
                     </button>
                   </div>
-                  {r.isActive === false && <div className="text-[11px] font-normal text-muted-foreground">{t("plans.inactive")}</div>}
+                  {r.isActive === false && !r.leftAt && <div className="text-[11px] font-normal text-muted-foreground">{t("plans.inactive")}</div>}
+                  {r.leftAt && <div className="text-[11px] font-normal text-muted-foreground">{t("plans.leftOn", { date: formatDate(`${r.leftAt}T12:00:00Z`) })}</div>}
                   {r.payDay && r.period && (
                     <div className="text-[11px] font-normal whitespace-nowrap text-muted-foreground">
                       {t("plans.period", { from: formatDate(r.period.from), to: formatDate(new Date(new Date(r.period.to).getTime() - 1)) })}

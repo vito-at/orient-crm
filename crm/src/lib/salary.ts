@@ -16,6 +16,9 @@
  * Период расчёта у каждого менеджера свой — по дню выплаты (User.payDay, см. payPeriod): выплата в конце месяца —
  * календарный месяц, выплата 20-го — с 21-го числа прошлого месяца по 20-е этого (зарплата за ноябрь — с 21.10 по 20.11).
  * Лиды, продажи и доля с авиабилетов считаются за этот период; план, условия и выплаты — по месяцу выплаты.
+ * Увольнение (User.leftAt — последний рабочий день): продажи по этот день включительно идут в зарплату, оклад — за
+ * отработанные дни периода, в последний день доли с авиабилетов и туров нет (её билеты делят те, кто был в работе),
+ * после него зарплата не начисляется (решение владельца 20.11.2026, Диора — 19.11.2026).
  * Учёт зарплаты в CRM начинается с «salaryStartAt» (настройки): учитываются только сделки, оплаченные с этого момента,
  * а месяцы целиком до него не считаются (расчёты за них вели вне CRM). Выплаты — частями, «Осталось» = к выплате − выплачено.
  */
@@ -151,9 +154,12 @@ export function flightShares(deals: { sellerId: string; day: string; profit: num
 }
 
 /** Доля каждого из делящих один билет, кто делит (продавшая и работавшие в тот день) и сколько их */
-export function flightShare(d: { sellerId: string; day: string; profit: number }, workers: Map<string, Set<string>>, poolPct: number) {
+export function flightShare(d: { sellerId: string; day: string; profit: number; sellerOut?: boolean }, workers: Map<string, Set<string>>, poolPct: number) {
   const team = new Set(workers.get(d.day) ?? []);
-  team.add(d.sellerId);
+  // продавшая в свой последний рабочий день (увольнение) в деление не входит
+  if (d.sellerOut) team.delete(d.sellerId);
+  else team.add(d.sellerId);
+  if (!team.size) return { share: 0, team: 0, pct: 0, members: team };
   return { share: Math.max(0, (d.profit * poolPct) / 100 / team.size), team: team.size, pct: poolPct / team.size, members: team };
 }
 
@@ -282,6 +288,10 @@ export interface ManagerMonth extends PayoutRow {
   countedFrom: string | null;
   /** день выплаты зарплаты; null — в конце месяца */
   payDay: number | null;
+  /** последний рабочий день (YYYY-MM-DD), если уволен */
+  leftAt: string | null;
+  /** оклад за отработанные дни: сколько дней из скольких (только при увольнении в этом периоде) */
+  baseDays: { worked: number; total: number } | null;
   /** период расчёта: с from (ISO) до to (ISO, не включая) */
   period: { from: string; to: string };
   paid: number;
@@ -363,16 +373,26 @@ export async function loadManagerMonths(range: MonthRange, managerId: string | n
     prisma.salesBonus.findMany({ orderBy: { fromDate: "asc" } }),
   ]);
   const bonuses: SalesBonusView[] = bonusRows.map((b) => ({ id: b.id, serviceType: b.serviceType, country: b.country, amount: toNum(b.amount), currency: b.currency, fromDate: b.fromDate.toISOString().slice(0, 10) }));
-  const workers = flightWorkers(
+  // уволенные: последний рабочий день по всем менеджерам — в этот день и позже они не делят авиабилеты и туры
+  const leftRows = await prisma.user.findMany({ where: { role: "MANAGER", leftAt: { not: null } }, select: { id: true, leftAt: true } });
+  const leftDay = new Map(leftRows.map((r) => [r.id, r.leftAt!.toISOString().slice(0, 10)]));
+  const workersAll = flightWorkers(
     shiftDays.map((s) => ({ userId: s.userId, day: s.day.toISOString().slice(0, 10), activeSec: s.activeSec })),
     range.ym <= SHIFT_RULE_FROM.slice(0, 7) ? await activityDays(wide) : [],
   );
+  const workers = new Map([...workersAll].map(([day, ids]) => [day, new Set([...ids].filter((id) => !(leftDay.get(id) && day >= leftDay.get(id)!)))]));
   const poolPct = toNum(settings.flightPoolPct);
-  return users.map((u) => {
-    const period = payPeriod(range.ym, u.payDay);
+  const rows = users.map((u) => {
+    const full = payPeriod(range.ym, u.payDay);
+    // уволен — период заканчивается последним рабочим днём (включительно); после него — пустой
+    const leftEnd = u.leftAt ? new Date(parseInputDate(u.leftAt.toISOString().slice(0, 10))!.getTime() + 86_400_000) : null;
+    const period = leftEnd && leftEnd < full.to ? { from: full.from, to: leftEnd > full.from ? leftEnd : full.from } : full;
+    const dayMs = 86_400_000;
+    const baseDays =
+      period.to < full.to ? { worked: Math.round((period.to.getTime() - period.from.getTime()) / dayMs), total: Math.round((full.to.getTime() - full.from.getTime()) / dayMs) } : null;
     // период, последний день которого (день выплаты) уже до начала учёта, — «до учёта»: зарплату за него выдали вне CRM
     // (Сабине выплата 20-го, учёт с 20.10 — её октябрь 21.09–20.10 закрыт вне CRM)
-    const tracked = !start || period.to.getTime() - 86_400_000 > start.getTime();
+    const tracked = !start || full.to.getTime() - 86_400_000 > start.getTime();
     // в периоде начала учёта комиссия — только с даты начала; периоды до учёта показывают продажи как есть, без начислений
     const dealsFrom = tracked && start && start > period.from ? start : period.from;
     const own = deals
@@ -421,7 +441,11 @@ export async function loadManagerMonths(range: MonthRange, managerId: string | n
     const pool = poolDeals
       .map((d) => ({ ...d, amount: toNum(d.amount), cost: toNum(d.cost) }))
       .filter((d) => d.managerId && inProfitPool(d) && d.paidAt >= dealsFrom && d.paidAt < period.to)
-      .map((d) => ({ d, s: flightShare({ sellerId: d.managerId!, day: toInputDate(d.paidAt), profit: poolProfit(d) }, workers, poolPct) }))
+      .map((d) => {
+        const day = toInputDate(d.paidAt);
+        const out = leftDay.get(d.managerId!);
+        return { d, s: flightShare({ sellerId: d.managerId!, day, profit: poolProfit(d), sellerOut: !!out && day >= out }, workers, poolPct) };
+      })
       .filter((x) => x.s.members.has(u.id));
     const flightCommission = round2(pool.reduce((sum, x) => sum + x.s.share, 0));
     const fact: PlanFact = {
@@ -450,7 +474,8 @@ export async function loadManagerMonths(range: MonthRange, managerId: string | n
     };
     const p = u.plans[0];
     const plan: PlanValues = { leads: p?.leads ?? null, sales: p?.sales ?? null, profit: p?.profit === null || p?.profit === undefined ? null : toNum(p.profit) };
-    const pay = calcPayout(terms, plan, fact);
+    // уволен в этом периоде — оклад за отработанные дни (1 500 000 ÷ 30 × 19)
+    const pay = calcPayout(baseDays ? { ...terms, base: round2((terms.base * baseDays.worked) / baseDays.total) } : terms, plan, fact);
     // месяц до начала учёта: зарплату за него платили вне CRM
     if (!tracked) Object.assign(pay, { commission: 0, base: 0, total: 0 });
     const line = (d: (typeof own)[number] | (typeof pool)[number]["d"], x: Pick<SalaryLine, "kind" | "base" | "from" | "pct" | "team" | "unit" | "earned">): SalaryLine => ({
@@ -507,6 +532,8 @@ export async function loadManagerMonths(range: MonthRange, managerId: string | n
       tracked,
       countedFrom: tracked && dealsFrom > period.from ? dealsFrom.toISOString() : null,
       payDay: u.payDay,
+      leftAt: u.leftAt ? u.leftAt.toISOString().slice(0, 10) : null,
+      baseDays,
       period: { from: period.from.toISOString(), to: period.to.toISOString() },
       paid,
       left: round2(pay.total - paid),
@@ -514,6 +541,8 @@ export async function loadManagerMonths(range: MonthRange, managerId: string | n
       lines,
     };
   });
+  // после последнего рабочего дня уволенный в зарплате не показывается (если за период нет выплат)
+  return rows.filter((r) => !(r.baseDays && r.baseDays.worked === 0 && !r.payouts.length));
 }
 
 /**
