@@ -104,12 +104,15 @@ export async function savePlanAction(input: {
   commissionFrom: string;
   /** день выплаты зарплаты 1–28; пусто — в конце месяца */
   payDay: string;
+  /** последний рабочий день (YYYY-MM-DD); пусто — работает */
+  leftAt?: string;
 }) {
   return runAction(async () => {
     await requireAdmin();
     const range = monthRange(input.month);
     const payDay = num(input.payDay);
     if (payDay !== null && (Number.isNaN(payDay) || !Number.isInteger(payDay) || payDay < 1 || payDay > PAY_DAY_MAX)) throw new ValidationError("err.payDay");
+    const leftAt = input.leftAt && /^\d{4}-\d{2}-\d{2}$/.test(input.leftAt) ? new Date(`${input.leftAt}T00:00:00Z`) : null;
     const leads = num(input.leads);
     const sales = num(input.sales);
     const profit = num(input.profit);
@@ -130,7 +133,7 @@ export async function savePlanAction(input: {
       current.commissionFrom === terms.commissionFrom;
     await prisma.$transaction([
       // день выплаты — у сотрудника, действует на все месяцы
-      prisma.user.update({ where: { id: input.userId }, data: { payDay } }),
+      prisma.user.update({ where: { id: input.userId }, data: { payDay, ...(input.leftAt !== undefined ? { leftAt } : {}) } }),
       prisma.managerPlan.upsert({
         where: { userId_month: { userId: input.userId, month: monthKey(range.ym) } },
         update: { leads: leads === null ? null : Math.round(leads), sales: sales === null ? null : Math.round(sales), profit },

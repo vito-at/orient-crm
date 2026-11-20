@@ -63,7 +63,7 @@ export function SalaryBreakdown({ row, monthName, onClose }: { row: PlanRowView;
         ) : (
           <div className="space-y-5 text-sm">
             <dl className="divide-y rounded-lg border">
-              <Item label={t("plans.base")} value={f.money(row.base, cur)} />
+              <Item label={row.baseDays ? t("plans.bdBaseDays", { worked: row.baseDays.worked, total: row.baseDays.total }) : t("plans.base")} value={f.money(row.base, cur)} />
               {KINDS.map((k) => {
                 const list = sum(k);
                 if (!list.length && !totals[k]) return null;

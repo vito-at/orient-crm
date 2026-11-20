@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calcPayout, flightShares, inProfitPool, monthRange, payPeriod, shiftMonth } from "@/lib/salary";
+import { calcPayout, flightShare, flightShares, inProfitPool, monthRange, payPeriod, shiftMonth } from "@/lib/salary";
 
 const fact = { leads: 40, sales: 12, profitUsd: 5000, profitSalary: 60_000_000, revenueUsd: 20_000, revenueSalary: 240_000_000, flightProfitSalary: 0, flightCommission: 0 };
 
@@ -49,6 +49,13 @@ describe("зарплата и план", () => {
     expect(inProfitPool({ serviceType: "TOUR", paidAt: new Date("2026-11-06T19:00:00Z") })).toBe(true); // 07.11 00:00
     expect(inProfitPool({ serviceType: "FLIGHTS", paidAt: new Date("2026-01-01T00:00:00Z") })).toBe(true);
     expect(inProfitPool({ serviceType: "VISA", paidAt: new Date("2026-11-10T00:00:00Z") })).toBe(false);
+  });
+  it("последний рабочий день уволенной: её билет делят те, кто в работе; никого нет — доля никому", () => {
+    const workers = new Map([["2026-11-19", new Set(["b"])]]);
+    const s = flightShare({ sellerId: "a", day: "2026-11-19", profit: 1_000_000, sellerOut: true }, workers, 30);
+    expect([...s.members]).toEqual(["b"]);
+    expect(s.share).toBe(300_000);
+    expect(flightShare({ sellerId: "a", day: "2026-11-19", profit: 1_000_000, sellerOut: true }, new Map(), 30).share).toBe(0);
   });
   it("билет в убыток даёт 0, а не минус: убыток не вычитается из доли с других билетов", () => {
     const workers = new Map([["2026-10-23", new Set(["a", "b"])]]);
