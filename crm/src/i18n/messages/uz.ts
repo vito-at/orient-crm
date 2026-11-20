@@ -476,6 +476,7 @@ export const uz: Messages = {
     notOnShift: "Avval chap menyuda «Ishda»ni yoqing — shunda yangi lidlarni ola olasiz",
     countryName: "Davlat nomini kiriting",
     countryUrl: "Sayt manzilini tekshiring — masalan, vfsglobal.com/uzbekistan",
+    leftAt: "Oxirgi ish kuni — sana yoki bo‘sh",
     payDay: "To‘lov kuni — 1 dan 28 gacha son yoki bo‘sh (oy oxiri)",
     countryPrice: "Mijoz uchun narx — raqam bilan, masalan 120 (har bir variantda)",
     countryExists: "Bunday nomli davlat allaqachon bor",

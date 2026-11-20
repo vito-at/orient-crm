@@ -112,7 +112,10 @@ export async function savePlanAction(input: {
     const range = monthRange(input.month);
     const payDay = num(input.payDay);
     if (payDay !== null && (Number.isNaN(payDay) || !Number.isInteger(payDay) || payDay < 1 || payDay > PAY_DAY_MAX)) throw new ValidationError("err.payDay");
-    const leftAt = input.leftAt && /^\d{4}-\d{2}-\d{2}$/.test(input.leftAt) ? new Date(`${input.leftAt}T00:00:00Z`) : null;
+    const leftAt = input.leftAt?.trim() ? new Date(`${input.leftAt.trim()}T00:00:00Z`) : null;
+    // неверная дата (не YYYY-MM-DD или несуществующая, например 30.02) — ошибка, а не тихая очистка
+    if (leftAt && (!/^\d{4}-\d{2}-\d{2}$/.test(input.leftAt!.trim()) || Number.isNaN(leftAt.getTime()) || leftAt.toISOString().slice(0, 10) !== input.leftAt!.trim()))
+      throw new ValidationError("err.leftAt");
     const leads = num(input.leads);
     const sales = num(input.sales);
     const profit = num(input.profit);

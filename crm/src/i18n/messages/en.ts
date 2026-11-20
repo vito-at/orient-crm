@@ -476,6 +476,7 @@ export const en: Messages = {
     notOnShift: "First turn on “At work” in the left menu — then you can take new leads",
     countryName: "Enter the country name",
     countryUrl: "Check the website address — e.g. vfsglobal.com/uzbekistan",
+    leftAt: "Last working day must be a date or empty",
     payDay: "Payday must be a number from 1 to 28, or empty (end of month)",
     countryPrice: "Client price must be a number, e.g. 120 (for every option)",
     countryExists: "A country with this name already exists",
