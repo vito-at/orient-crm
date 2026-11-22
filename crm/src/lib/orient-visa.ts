@@ -9,6 +9,7 @@ import type { Prisma, VisaStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { guessMime } from "@/lib/mime";
+import { docFileFields, logDocAccess } from "@/lib/doc-files";
 
 export interface OrientVisaConfig {
   url: string;
@@ -156,6 +157,8 @@ interface SiteDocument {
   size?: number | null;
   status?: string | null;
   url?: string | null;
+  /** файл уже передан в CRM и удалён с сайта (после documents_received): url = null */
+  transferred?: boolean;
 }
 
 export function readSiteData(enc: string | null | undefined): SiteData | null {
@@ -216,10 +219,16 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
   const have = new Set((await prisma.leadDocument.findMany({ where: { serviceId: s.id, externalId: { not: null } }, select: { externalId: true } })).map((d) => d.externalId));
   let added = 0;
   const errors: string[] = [];
+  // переданные в CRM и удалённые с сайта файлы, которых в CRM нет (их удалили здесь) — повтор не поможет, только сообщаем
+  const lost: string[] = [];
   for (const t of travelersRaw) {
     const docs = Array.isArray(t.documents) ? (t.documents as SiteDocument[]) : [];
     for (const d of docs) {
-      if (!d?.id || !d.url || have.has(d.id)) continue;
+      if (!d?.id || have.has(d.id)) continue;
+      if (!d.url) {
+        if (d.transferred) lost.push(d.title);
+        continue;
+      }
       try {
         const res = await fetchFn(d.url, { signal: AbortSignal.timeout(60_000) });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -228,9 +237,11 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
         const mime = d.mime || res.headers.get("content-type")?.split(";")[0] || null;
         const ext = mime?.split("/")[1]?.replace("jpeg", "jpg") ?? "bin";
         const fileName = `${(d.title || "document").replace(/[\\/:*?"<>|\r\n]/g, " ").trim()}${t.name ? ` — ${str(t.name)}` : ""}.${ext}`;
-        await prisma.leadDocument.create({
-          data: { serviceId: s.id, leadId: s.leadId, docType: d.title || "Документ", fileName: fileName.slice(0, 200), mime: guessMime(fileName, mime), size: body.length, data: Buffer.from(body), externalId: d.id, travelerName: str(t.name) },
+        const doc = await prisma.leadDocument.create({
+          data: { serviceId: s.id, leadId: s.leadId, docType: d.title || "Документ", fileName: fileName.slice(0, 200), mime: guessMime(fileName, mime), ...docFileFields(body), externalId: d.id, travelerName: str(t.name) },
+          select: { id: true, serviceId: true, fileName: true },
         });
+        await logDocAccess([doc], "upload", null);
         have.add(d.id);
         added++;
       } catch (e) {
@@ -248,11 +259,50 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
       // не скачались не все файлы — попробуем ещё раз (ссылки при повторе будут новые)
       siteFetchNeeded: errors.length > 0,
       siteFetchedAt: new Date(),
-      siteFetchError: errors.length ? errors.join("; ").slice(0, 500) : null,
+      siteFetchError: errors.length ? errors.join("; ").slice(0, 500) : lost.length ? `Файлы уже удалены с сайта, а в CRM их нет: ${lost.join(", ")}`.slice(0, 500) : null,
       siteFetchTries: errors.length ? { increment: 1 } : 0,
     },
   });
+  // сохранённые файлы подтверждаем сайту — он удаляет их у себя (минимизация данных)
+  await acknowledgeSiteDocuments(s.id);
   return { ok: !errors.length, added, error: errors[0] };
+}
+
+/**
+ * Подтверждение получения документов сайту (раздел 3 документа обмена): {"type":"documents_received",
+ * "documents":[{id, sha256}]}. Сайт удаляет у себя файлы с совпавшей суммой. Каждый документ подтверждается один раз;
+ * файлы, сохранённые до шифрования, — после того как воркер их зашифрует и посчитает sha256.
+ */
+export async function acknowledgeSiteDocuments(serviceId: string, now = new Date()): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    const s = await tx.leadService.findUnique({ where: { id: serviceId }, select: { id: true, externalId: true } });
+    if (!s?.externalId) return 0;
+    const docs = await tx.leadDocument.findMany({
+      where: { serviceId, externalId: { not: null }, sha256: { not: null }, siteAckAt: null, purgedAt: null },
+      select: { id: true, externalId: true, sha256: true },
+    });
+    if (!docs.length) return 0;
+    // updateMany с условием siteAckAt = null: параллельный вызов не поставит то же подтверждение второй раз
+    const { count } = await tx.leadDocument.updateMany({ where: { id: { in: docs.map((d) => d.id) }, siteAckAt: null }, data: { siteAckAt: now } });
+    if (count !== docs.length) throw new Error("documents_received: документы подтверждаются параллельно");
+    await tx.siteEvent.create({
+      data: { serviceId, payload: { externalId: s.externalId, serviceId, type: "documents_received", documents: docs.map((d) => ({ id: d.externalId!, sha256: d.sha256! })) } },
+    });
+    return docs.length;
+  });
+}
+
+/** Воркер: подтвердить сайту документы, которые ещё не подтверждены (после шифрования старых файлов и при сбоях) */
+export async function acknowledgePendingSiteDocuments(): Promise<number> {
+  if (!(await orientVisaConfig())) return 0;
+  const services = await prisma.leadService.findMany({
+    where: { externalId: { not: null }, documents: { some: { externalId: { not: null }, sha256: { not: null }, siteAckAt: null, purgedAt: null } } },
+    select: { id: true },
+    take: 50,
+  });
+  let n = 0;
+  for (const s of services) n += await acknowledgeSiteDocuments(s.id).catch(() => 0);
+  return n;
 }
 
 /** Воркер: заявки, у которых надо (заново) забрать анкету — с паузой между неудачными попытками */

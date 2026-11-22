@@ -6,7 +6,7 @@ import { Copy, FileCheck2, Globe, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, NativeSelect, Textarea } from "@/components/ui/input";
-import { generateSiteKeyAction, revokeSiteKeyAction, saveOrientVisaAction, saveRequirementsAction } from "@/app/(app)/settings/visa-actions";
+import { generateSiteKeyAction, revokeSiteKeyAction, saveOrientVisaAction, saveRequirementsAction, saveRetentionAction } from "@/app/(app)/settings/visa-actions";
 import { SERVICE_TYPES, VISA_COUNTRIES } from "@/lib/constants";
 import { serviceLabel } from "@/i18n/labels";
 import { useI18n } from "@/i18n/client";
@@ -231,6 +231,40 @@ export function OrientVisaCard({ url, hasKey, hasSecret, fromEnv, pending, faile
                 if (!r.ok) return void toast.error(r.error);
                 toast.success(t("common.saved"));
                 setV({ ...v, key: "", secret: "" });
+              })
+            }
+          >
+            {busy ? t("common.saving") : t("common.save")}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Срок хранения паспортов и анкет: через N дней после выдачи визы / отказа воркер удаляет файлы и анкету */
+export function RetentionCard({ days }: { days: number }) {
+  const { t } = useI18n();
+  const [v, setV] = useState(String(days));
+  const [busy, start] = useTransition();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("docset.retentionTitle")}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <p className="text-muted-foreground">{t("docset.retentionHint")}</p>
+        <div className="flex flex-wrap items-end gap-2">
+          <Field label={t("docset.retentionDays")}>
+            <Input type="number" min={0} max={3650} value={v} onChange={(e) => setV(e.target.value)} className="w-32" />
+          </Field>
+          <Button
+            disabled={busy}
+            onClick={() =>
+              start(async () => {
+                const r = await saveRetentionAction(Number(v));
+                if (!r.ok) return void toast.error(r.error);
+                toast.success(t("common.saved"));
               })
             }
           >

@@ -10,7 +10,7 @@ import { Table, TBody, TD, TH, THead, TR } from "@/components/ui/table";
 import { roleLabel } from "@/i18n/labels";
 import { useI18n } from "@/i18n/client";
 import { formatDate } from "@/lib/format";
-import { saveUserAction } from "@/app/(app)/settings/actions";
+import { resetUserTotpAction, saveUserAction } from "@/app/(app)/settings/actions";
 import { useRun } from "./use-run";
 
 export interface UserView {
@@ -21,6 +21,8 @@ export interface UserView {
   isActive: boolean;
   createdAt: string;
   activeLeads: number;
+  /** включён двухфакторный вход */
+  totp: boolean;
 }
 
 function UserDialog({ user, onClose }: { user: UserView | null; onClose: () => void }) {
@@ -56,6 +58,14 @@ function UserDialog({ user, onClose }: { user: UserView | null; onClose: () => v
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={f.isActive} onChange={(e) => setF({ ...f, isActive: e.target.checked })} /> {t("users.active")}
           </label>
+          {user?.totp && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-2 text-sm">
+              <span>{t("users.totpOn")}</span>
+              <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => confirm(t("users.totpResetConfirm", { name: user.name })) && run(() => resetUserTotpAction(user.id), t("users.totpResetDone"), onClose)}>
+                {t("users.totpReset")}
+              </Button>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={onClose}>
               {t("common.cancel")}
@@ -100,7 +110,8 @@ export function UsersEditor({ users }: { users: UserView[] }) {
               <TD>{roleLabel(t, u.role)}</TD>
               <TD className="text-right">{u.activeLeads}</TD>
               <TD>{formatDate(u.createdAt)}</TD>
-              <TD>{u.isActive ? <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">{t("users.statusActive")}</Badge> : <Badge className="bg-slate-100 text-slate-500">{t("users.statusBlocked")}</Badge>}</TD>
+              <TD>{u.isActive ? <Badge className="border-emerald-200 bg-emerald-50 text-emerald-700">{t("users.statusActive")}</Badge> : <Badge className="bg-slate-100 text-slate-500">{t("users.statusBlocked")}</Badge>}
+                {u.totp && <Badge className="ml-1 border-sky-200 bg-sky-50 text-sky-700">2FA</Badge>}</TD>
               <TD className="text-right">
                 <Button size="icon-sm" variant="ghost" onClick={() => setEditing(u)} title={t("common.edit")}>
                   <Pencil />
