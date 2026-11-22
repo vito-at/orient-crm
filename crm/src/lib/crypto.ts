@@ -4,7 +4,7 @@ import crypto from "node:crypto";
  * Шифрование секретов интеграции (App Secret, Page Access Token) — AES-256-GCM.
  * Ключ берётся из ENCRYPTION_KEY: 64 hex-символа (32 байта) или любая строка (тогда из неё выводится ключ через SHA-256).
  */
-function getKey(): Buffer {
+export function getKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY;
   if (!raw) throw new Error("ENCRYPTION_KEY не задан в .env");
   if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");

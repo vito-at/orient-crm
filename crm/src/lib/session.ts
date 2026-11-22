@@ -5,7 +5,10 @@ import { auth } from "@/auth";
 import { prisma } from "./db";
 import type { TKey } from "@/i18n/core";
 
-export type CurrentUser = Pick<User, "id" | "name" | "login" | "role">;
+export type CurrentUser = Pick<User, "id" | "name" | "login" | "role"> & {
+  /** вход был с кодом двухфакторной защиты */
+  totp?: boolean;
+};
 
 /** Текущий пользователь из БД (проверяем, что он не заблокирован). */
 export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
@@ -19,12 +22,20 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   // роль сменили после входа (например, менеджер стал визовиком) — старый вход недействителен, нужно войти заново:
   // иначе до 30 дней доступ по старой роли (или бесконечная переадресация при повышении визовика)
   if (session.user.role && session.user.role !== user.role) return null;
-  return { id: user.id, name: user.name, login: user.login, role: user.role };
+  return { id: user.id, name: user.name, login: user.login, role: user.role, totp: !!session.user.totp };
 });
 
-export async function requireUser(): Promise<CurrentUser> {
+/** Визовый специалист вошёл без двухфакторного кода — к паспортам клиентов его не пускаем, пока он не включит защиту */
+export const needsTotp = (user: Pick<CurrentUser, "role" | "totp">) => user.role === "VISA" && !user.totp;
+
+/**
+ * Текущий пользователь или переход на вход. Визового специалиста без двухфакторного входа отправляет на «Мой профиль»
+ * (это дублирует middleware: переадресация после формы входа его обходит). without2fa — для общего макета и самой страницы профиля.
+ */
+export async function requireUser(opts?: { without2fa?: boolean }): Promise<CurrentUser> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  if (!opts?.without2fa && needsTotp(user)) redirect("/account");
   return user;
 }
 

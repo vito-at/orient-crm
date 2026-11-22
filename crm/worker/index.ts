@@ -8,7 +8,8 @@ import { backfillOrganic, fixPhonelessLeads, fixUnnamedLeads, syncLeads } from "
 import { createTripFollowUps } from "../src/lib/leads/trip-followup";
 import { scanNotifications } from "../src/lib/notify";
 import { processAiReplies } from "../src/lib/chats/ai";
-import { processSiteEvents, processSiteFetches } from "../src/lib/orient-visa";
+import { acknowledgePendingSiteDocuments, processSiteEvents, processSiteFetches } from "../src/lib/orient-visa";
+import { encryptStoredDocuments, purgeExpiredDocuments } from "../src/lib/doc-files";
 import { syncSpend } from "../src/lib/meta/insights";
 import { backfillConversions, sendPendingConversions } from "../src/lib/meta/capi";
 import { isRateStale, RATE_RETRY_UNTIL_HOUR, updateUsdRate } from "../src/lib/rates";
@@ -93,6 +94,18 @@ cron.schedule("*/10 * * * *", () => void scanNotifications().catch((e) => log("�
 // сайт Orient Visa: события о визах с повторами и загрузка анкет/документов
 cron.schedule("* * * * *", () => void processSiteEvents().catch((e) => log("Orient Visa, события:", e)));
 cron.schedule("* * * * *", () => void processSiteFetches().catch((e) => log("Orient Visa, анкеты:", e)));
+// документы клиентов: старые файлы шифруются понемногу, сохранённые с сайта подтверждаются ему (сайт удаляет у себя),
+// по сроку хранения после выдачи визы / отказа паспорта и анкета удаляются (раз в сутки ночью)
+cron.schedule("* * * * *", () =>
+  void encryptStoredDocuments()
+    .then(async (n) => {
+      if (n) log(`Документы зашифрованы: ${n}`);
+      const acked = await acknowledgePendingSiteDocuments();
+      if (acked) log(`Сайту подтверждено получение документов: ${acked}`);
+    })
+    .catch((e) => log("Документы, шифрование/подтверждение:", e)),
+);
+cron.schedule("23 3 * * *", () => void purgeExpiredDocuments().then((r) => r.services && log("Удалено по сроку хранения:", r)).catch((e) => log("Срок хранения документов:", e)), { timezone: "Asia/Tashkent" });
 // очередь лидов: страховка раздачи (после действий она идёт сразу)
 cron.schedule("* * * * *", () => void distributeQueue().then((n) => n && log(`Лиды из очереди выданы: ${n}`)).catch((e) => log("Очередь лидов:", e)));
 // «В работе» выключается само, если менеджер час ничего не делал в CRM

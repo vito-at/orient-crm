@@ -252,6 +252,15 @@ export async function saveUserAction(input: { id?: string; login: string; name: 
   });
 }
 
+/** Сброс двухфакторного входа (сотрудник потерял телефон): при следующем входе визовик настроит его заново */
+export async function resetUserTotpAction(userId: string) {
+  return runAction(async () => {
+    await requireAdmin();
+    await prisma.user.update({ where: { id: userId }, data: { totpSecretEnc: null, totpEnabledAt: null } });
+    revalidateAll();
+  });
+}
+
 /**
  * Сотрудника отключили (уволили) или сделали визовиком — его незакрытые лиды уходят в общий список (их видят все менеджеры),
  * открытые задачи — администратору, который это сделал. Раньше снимались только «Новые», а «Перезвонить» и «Ожидает оплату»

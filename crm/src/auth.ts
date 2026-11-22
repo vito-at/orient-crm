@@ -5,10 +5,13 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { authConfig } from "./auth.config";
 import { clientIp, loginBlocked, loginFailed, loginSucceeded } from "@/lib/login-guard";
+import { decrypt } from "@/lib/crypto";
+import { consumeTotpStep, verifyTotp } from "@/lib/totp";
 
 const credentialsSchema = z.object({
   login: z.string().trim().min(1),
   password: z.string().min(1),
+  code: z.string().optional(),
 });
 
 /** bcrypt-хэш случайной строки — для проверки пароля несуществующего логина за то же время */
@@ -16,6 +19,13 @@ const DUMMY_HASH = "$2b$10$r0Lb2b.UOammPnNNBalbL.p49BEK4iq8y6bAwNU.vz5ed2Ez3L9oe
 
 class InvalidCredentials extends CredentialsSignin {
   code = "invalid_credentials";
+}
+/** пароль верный, нужен код из приложения-аутентификатора */
+class TotpRequired extends CredentialsSignin {
+  code = "totp_required";
+}
+class TotpInvalid extends CredentialsSignin {
+  code = "totp_invalid";
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -28,7 +38,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   providers: [
     Credentials({
-      credentials: { login: {}, password: {} },
+      credentials: { login: {}, password: {}, code: {} },
       async authorize(raw, request) {
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) throw new InvalidCredentials();
@@ -43,8 +53,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           loginFailed(login, ip);
           throw new InvalidCredentials();
         }
+        // двухфакторный вход: после верного пароля — код из приложения (один код — один вход)
+        if (user.totpEnabledAt && user.totpSecretEnc) {
+          const code = parsed.data.code?.trim();
+          if (!code) throw new TotpRequired();
+          const step = verifyTotp(decrypt(user.totpSecretEnc) ?? "", code);
+          if (step === null || !consumeTotpStep(user.id, step)) {
+            loginFailed(login, ip);
+            throw new TotpInvalid();
+          }
+        }
         loginSucceeded(login, ip);
-        return { id: user.id, name: user.name, role: user.role, login: user.login };
+        return { id: user.id, name: user.name, role: user.role, login: user.login, totp: !!user.totpEnabledAt };
       },
     }),
   ],

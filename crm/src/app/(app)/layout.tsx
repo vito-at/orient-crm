@@ -17,7 +17,8 @@ import { requireUser } from "@/lib/session";
 import { handedVisa } from "@/lib/visa";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const user = await requireUser();
+  // страницы сами проверяют двухфакторный вход визовика; макет нужен и странице «Мой профиль»
+  const user = await requireUser({ without2fa: true });
   const { t } = await getI18n();
 
   const [newLeads, tasks, meta, settings, pendingCosts, unreadChats, newVisa] = await Promise.all([

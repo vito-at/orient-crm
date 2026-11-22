@@ -1,10 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/session";
+import { getCurrentUser, needsTotp } from "@/lib/session";
 import { DOC_MAX, guessMime, serviceScope } from "@/lib/visa";
 import { getI18n } from "@/i18n/server";
 import type { TKey } from "@/i18n/core";
+import { docFileFields, logDocAccess } from "@/lib/doc-files";
+import { clientIp } from "@/lib/login-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +14,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  if (needsTotp(user)) return NextResponse.json({ ok: false, error: "Two-factor sign-in required" }, { status: 403 });
   const { t } = await getI18n();
   const fail = (key: TKey) => NextResponse.json({ ok: false, error: t(key) }, { status: 400 });
   if (Number(req.headers.get("content-length") ?? 0) > DOC_MAX + 1024 * 1024) return fail("err.chatFileTooBig");
@@ -29,9 +32,11 @@ export async function POST(req: NextRequest) {
   if (!(file instanceof File) || !file.size) return fail("err.chatFileEmpty");
   if (file.size > DOC_MAX) return fail("err.chatFileTooBig");
   const name = file.name.replace(/[\r\n"]/g, "").slice(0, 200) || "file";
-  await prisma.leadDocument.create({
-    data: { serviceId: service.id, leadId: service.leadId, docType, fileName: name, mime: guessMime(name, file.type), size: file.size, data: Buffer.from(await file.arrayBuffer()), uploadedById: user.id },
+  const doc = await prisma.leadDocument.create({
+    data: { serviceId: service.id, leadId: service.leadId, docType, fileName: name, mime: guessMime(name, file.type), ...docFileFields(new Uint8Array(await file.arrayBuffer())), uploadedById: user.id },
+    select: { id: true, serviceId: true, fileName: true },
   });
+  await logDocAccess([doc], "upload", user.id, clientIp(req.headers));
   revalidatePath(`/leads/${service.leadId}`);
   revalidatePath("/visa");
   revalidatePath(`/visa/${service.id}`);

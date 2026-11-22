@@ -141,11 +141,14 @@ function SidebarContent({ user, counters, logout, rate, shift }: SidebarProps) {
         <RateWidget rate={rate.value} updatedAt={rate.updatedAt} />
         {/* тема и язык — маленькими кнопками в строке пользователя, чтобы не занимать место под разделами */}
         <div className="flex items-center gap-2 px-1">
-          <div className="flex size-8 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white">{user.name.slice(0, 1).toUpperCase()}</div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-foreground">{user.name}</div>
-            <div className="truncate text-xs text-sidebar-muted">{t(`role.${user.role}` as TKey)}</div>
-          </div>
+          {/* имя — ссылка на «Мой профиль» (двухфакторный вход) */}
+          <Link href="/account" title={t("account.menu")} className="flex min-w-0 flex-1 items-center gap-2 rounded-md hover:bg-sidebar-hover">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white">{user.name.slice(0, 1).toUpperCase()}</div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-foreground">{user.name}</div>
+              <div className="truncate text-xs text-sidebar-muted">{t(`role.${user.role}` as TKey)}</div>
+            </div>
+          </Link>
           <ThemeToggle compact />
           <LanguageSwitcher compact />
           <form action={logout}>

@@ -124,6 +124,10 @@ model User {
   visaServices  LeadService[]  @relation("ServiceAssignee")
   documents     LeadDocument[]
   visaEvents    VisaEvent[]
+  documentAccess DocumentAccess[]
+  /// двухфакторный вход: секрет TOTP (зашифрован) и когда включён; у визовых специалистов обязателен
+  totpSecretEnc  String?
+  totpEnabledAt  DateTime?
 }
 
 model LeadStatus {
@@ -485,6 +489,8 @@ model AppSettings {
   orientVisaUrl       String?
   orientVisaKeyEnc    String?
   orientVisaSecretEnc String?
+  /// через сколько дней после выдачи визы / отказа удалять паспорта и анкету (0 — не удалять)
+  docRetentionDays    Int              @default(90)
 }
 
 /// История курсов USD→UZS по дням: суммы пересчитываются по курсу дня операции, поэтому отчёты за прошлые даты не меняются
@@ -902,6 +908,8 @@ model LeadService {
   portalReference String?
   /// анкета туристов и контакты с сайта — зашифрованный JSON (персональные данные)
   siteDataEnc     String?
+  /// паспорта и анкета удалены по сроку хранения
+  purgedAt        DateTime?
   /// нужно (заново) забрать анкету и документы с сайта
   siteFetchNeeded Boolean   @default(false)
   siteFetchedAt   DateTime?
@@ -938,7 +946,15 @@ model LeadDocument {
   fileName      String
   mime          String
   size          Int
+  /// содержимое файла, зашифрованное AES-256-GCM (lib/doc-files.ts); у старых, ещё не зашифрованных, encrypted = false
   data          Bytes
+  encrypted     Boolean     @default(false)
+  /// SHA-256 исходного файла (hex) — подтверждение получения для сайта Orient Visa и проверка целостности
+  sha256        String?
+  /// содержимое удалено по сроку хранения после выдачи визы / отказа; запись остаётся
+  purgedAt      DateTime?
+  /// получение подтверждено сайту Orient Visa (событие documents_received поставлено в очередь)
+  siteAckAt     DateTime?
   /// сохранён из переписки
   chatMessageId String?
   /// документ с сайта: его id на сайте и турист, к которому он относится
@@ -950,6 +966,24 @@ model LeadDocument {
 
   @@index([serviceId])
   @@index([leadId])
+}
+
+/// Журнал доступа к документам клиентов: кто открыл, скачал, загрузил, удалил; удаление по сроку и передача на сайт
+model DocumentAccess {
+  id         String   @id @default(cuid())
+  /// без связи: запись остаётся после удаления документа
+  documentId String
+  serviceId  String?
+  fileName   String
+  /// view | download | upload | delete | purge | site
+  action     String
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  ip         String?
+  at         DateTime @default(now())
+
+  @@index([serviceId, at])
+  @@index([documentId])
 }
 
 /// История визовой заявки: смена этапа и комментарий визового специалиста

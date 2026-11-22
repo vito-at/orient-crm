@@ -18,6 +18,13 @@ export const fileSize = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.ro
 function DocLink({ d, canDelete }: { d: DocView; canDelete: boolean }) {
   const { t } = useI18n();
   const [pending, start] = useTransition();
+  if (d.purged)
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground" title={`${d.fileName} · ${d.at}`}>
+        <span className="min-w-0 truncate line-through">{d.fileName}</span>
+        <span className="shrink-0">· {t("docs.purged")}</span>
+      </div>
+    );
   return (
     <div className="flex items-center gap-1.5 text-xs">
       <a href={`/api/docs/${d.id}`} target="_blank" rel="noreferrer" className="min-w-0 truncate text-primary hover:underline" title={`${d.fileName} · ${d.at}${d.by ? ` · ${d.by}` : ""}`}>

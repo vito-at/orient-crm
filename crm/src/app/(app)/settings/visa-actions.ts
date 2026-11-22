@@ -69,3 +69,13 @@ export async function saveOrientVisaAction(input: { url: string; key: string; se
     revalidatePath("/settings");
   });
 }
+
+/** Срок хранения паспортов и анкет после выдачи визы / отказа (дней, 0 — не удалять) */
+export async function saveRetentionAction(days: number) {
+  return runAction(async () => {
+    await requireAdmin();
+    if (!Number.isInteger(days) || days < 0 || days > 3650) throw new ValidationError("err.retentionDays");
+    await prisma.appSettings.update({ where: { id: 1 }, data: { docRetentionDays: days } });
+    revalidatePath("/settings");
+  });
+}

@@ -51,6 +51,11 @@ export default async function VisaApplicationPage({ params }: { params: Promise<
     },
   });
   if (!s) notFound();
+  // журнал доступа к документам — только администратору
+  const journal =
+    user.role === "ADMIN"
+      ? await prisma.documentAccess.findMany({ where: { serviceId: s.id }, orderBy: { at: "desc" }, take: 50, include: { user: { select: { name: true } } } })
+      : [];
   const [view] = await loadServiceViews({ id: s.id });
   const site = !!s.externalId;
   const pendingEvents = s.siteEvents.filter((e) => !e.sentAt);
@@ -151,8 +156,31 @@ export default async function VisaApplicationPage({ params }: { params: Promise<
             <CardHeader>
               <CardTitle>{t("visa.docs")}</CardTitle>
             </CardHeader>
-            <CardContent>{view && <DocChecklist service={view} userId={user.id} isAdmin={user.role === "ADMIN"} />}</CardContent>
+            <CardContent>
+              {s.purgedAt && <p className="mb-3 text-xs text-muted-foreground">{t("docs.purgedNote", { date: formatDate(s.purgedAt) })}</p>}
+              {view && <DocChecklist service={view} userId={user.id} isAdmin={user.role === "ADMIN"} />}
+            </CardContent>
           </Card>
+          {user.role === "ADMIN" && (
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("docs.journal")}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {!journal.length && <p className="text-sm text-muted-foreground">{t("docs.journalEmpty")}</p>}
+                <ul className="divide-y text-xs">
+                  {journal.map((j) => (
+                    <li key={j.id} className="flex flex-wrap gap-x-2 py-1.5">
+                      <span className="text-muted-foreground tabular-nums">{formatDateTime(j.at)}</span>
+                      <span className="font-medium">{j.user?.name ?? t("docs.system")}</span>
+                      <span>{t(`docs.act_${j.action}` as TKey)}</span>
+                      <span className="min-w-0 truncate text-muted-foreground">{j.fileName}</span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
         </div>
         <div className="space-y-4">
           <Card>

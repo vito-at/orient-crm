@@ -12,6 +12,7 @@ import { getTelegram, telegramBot } from "@/lib/chats/telegram";
 import { notify } from "@/lib/notify";
 import { enqueueMessageEvent, enqueueStatusEvent, fetchSiteApplication } from "@/lib/orient-visa";
 import { DOC_MAX, FINAL_VISA, VISA_STATUSES, ensureLeadServices, guessMime, requirementsFor, serviceScope } from "@/lib/visa";
+import { docFileFields, logDocAccess } from "@/lib/doc-files";
 
 async function getService(user: CurrentUser, serviceId: string) {
   const s = await prisma.leadService.findFirst({ where: { id: serviceId, ...serviceScope(user) }, include: { lead: { select: { id: true, name: true, managerId: true } } } });
@@ -228,11 +229,12 @@ export async function takeVisaAction(serviceId: string) {
 export async function deleteDocumentAction(documentId: string) {
   return runAction(async () => {
     const user = await requireUser();
-    const d = await prisma.leadDocument.findUnique({ where: { id: documentId }, select: { id: true, serviceId: true, leadId: true, uploadedById: true } });
+    const d = await prisma.leadDocument.findUnique({ where: { id: documentId }, select: { id: true, serviceId: true, leadId: true, uploadedById: true, fileName: true } });
     if (!d) throw new AccessError("err.docNotFound");
     await getService(user, d.serviceId);
     if (user.role !== "ADMIN" && d.uploadedById !== user.id) throw new AccessError();
     await prisma.leadDocument.delete({ where: { id: d.id } });
+    await logDocAccess([d], "delete", user.id);
     revalidate(d.leadId, d.serviceId);
   });
 }
@@ -302,9 +304,11 @@ export async function saveChatDocumentAction(input: { messageId: string; index: 
     }
     if (data.length > DOC_MAX) throw new ValidationError("err.chatFileTooBig");
     if (att.type === "image" && !/\.\w+$/.test(name)) name = `${name || "photo"}.jpg`;
-    await prisma.leadDocument.create({
-      data: { serviceId: s.id, leadId: s.leadId, docType, fileName: name.slice(0, 200), mime: guessMime(name, mime || (att.type === "image" ? "image/jpeg" : null)), size: data.length, data: Buffer.from(data), chatMessageId: msg.id, uploadedById: user.id },
+    const doc = await prisma.leadDocument.create({
+      data: { serviceId: s.id, leadId: s.leadId, docType, fileName: name.slice(0, 200), mime: guessMime(name, mime || (att.type === "image" ? "image/jpeg" : null)), ...docFileFields(data), chatMessageId: msg.id, uploadedById: user.id },
+      select: { id: true, serviceId: true, fileName: true },
     });
+    await logDocAccess([doc], "upload", user.id);
     revalidate(s.leadId, s.id);
   });
 }

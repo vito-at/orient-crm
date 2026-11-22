@@ -15,7 +15,7 @@ import { SyncLogTable } from "@/components/settings/sync-log";
 import { MessengersForm } from "@/components/settings/messengers-form";
 import { AiBotForm } from "@/components/settings/ai-bot-form";
 import { TemplatesEditor } from "@/components/settings/templates-editor";
-import { OrientVisaCard, RequirementsEditor, SiteKeyCard, type RequirementList } from "@/components/settings/visa-settings";
+import { OrientVisaCard, RetentionCard, RequirementsEditor, SiteKeyCard, type RequirementList } from "@/components/settings/visa-settings";
 import { ensureDocDefaults } from "@/lib/visa";
 import { getAiSettings, workHoursText } from "@/lib/chats/ai";
 import { scheduleOf } from "@/lib/work-hours";
@@ -228,7 +228,7 @@ async function UsersTab() {
       </CardHeader>
       <CardContent>
         <UsersEditor
-          users={users.map((u) => ({ id: u.id, login: u.login, name: u.name, role: u.role, isActive: u.isActive, createdAt: u.createdAt.toISOString(), activeLeads: u._count.leads }))}
+          users={users.map((u) => ({ id: u.id, login: u.login, name: u.name, role: u.role, isActive: u.isActive, createdAt: u.createdAt.toISOString(), activeLeads: u._count.leads, totp: !!u.totpEnabledAt }))}
         />
       </CardContent>
     </Card>
@@ -305,6 +305,7 @@ async function VisaTab() {
         pending={pendingEvents}
         failed={failedEvent?.lastError ?? null}
       />
+      <RetentionCard days={settings.docRetentionDays} />
     </div>
   );
 }
