@@ -28,6 +28,16 @@ export async function orientVisaConfig(): Promise<OrientVisaConfig | null> {
 
 export const hmacHex = (secret: string, body: string) => crypto.createHmac("sha256", secret).update(body).digest("hex");
 
+/**
+ * Подпись события для сайта, v2 (раздел 3 документа обмена): HMAC-SHA256 от «{X-Timestamp}.{X-Event-Id}.{тело}».
+ * Сайт принимает событие, если время в пределах ±5 минут, — перехваченный запрос нельзя повторить позже.
+ * На каждом повторе отметка времени и подпись создаются заново.
+ */
+export function eventHeaders(secret: string, eventId: string, body: string, now = Date.now()): Record<string, string> {
+  const ts = String(Math.floor(now / 1000));
+  return { "Content-Type": "application/json", "X-Event-Id": eventId, "X-Timestamp": ts, "X-Signature": `v2=${hmacHex(secret, `${ts}.${eventId}.${body}`)}` };
+}
+
 const appUrl = () => (process.env.APP_URL || "http://localhost:3000").replace(/\/$/, "");
 
 /** Подписанная ссылка на файл визы / отказа для сайта: живёт час, сайт скачивает файл сразу при получении события */
@@ -104,7 +114,7 @@ export async function processSiteEvents(now = new Date(), fetchFn: FetchFn = fet
     try {
       const res = await fetchFn(`${cfg.url}/api/integration/crm-events`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Event-Id": ev.id, "X-Signature": `sha256=${hmacHex(cfg.secret, body)}` },
+        headers: eventHeaders(cfg.secret, ev.id, body),
         body,
         signal: AbortSignal.timeout(20_000),
       });

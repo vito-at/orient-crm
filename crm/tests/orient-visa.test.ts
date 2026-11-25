@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { hmacHex, retryDelayMs, signedFileUrl, verifyFileSignature } from "@/lib/orient-visa";
+import { eventHeaders, hmacHex, retryDelayMs, signedFileUrl, verifyFileSignature } from "@/lib/orient-visa";
 
 describe("интеграция с сайтом Orient Visa", () => {
   it("подпись события — HMAC-SHA256 сырого тела в hex, как проверяет сайт", () => {
@@ -25,5 +25,17 @@ describe("интеграция с сайтом Orient Visa", () => {
     expect(retryDelayMs(1)).toBe(60_000);
     expect(retryDelayMs(3)).toBe(4 * 60_000);
     expect(retryDelayMs(20)).toBe(6 * 3_600_000);
+  });
+});
+
+describe("подпись событий для сайта v2", () => {
+  it("HMAC от «время.id события.тело», время — unix-секунды", () => {
+    const body = JSON.stringify({ externalId: "e1", type: "status", status: "IN_PROGRESS" });
+    const h = eventHeaders("secret", "ev1", body, 1_764_100_000_123);
+    expect(h["X-Event-Id"]).toBe("ev1");
+    expect(h["X-Timestamp"]).toBe("1764100000");
+    expect(h["X-Signature"]).toBe(`v2=${crypto.createHmac("sha256", "secret").update(`1764100000.ev1.${body}`).digest("hex")}`);
+    // повтор позже — новое время и новая подпись
+    expect(eventHeaders("secret", "ev1", body, 1_764_100_060_000)["X-Signature"]).not.toBe(h["X-Signature"]);
   });
 });
