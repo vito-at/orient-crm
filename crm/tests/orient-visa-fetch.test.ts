@@ -181,6 +181,18 @@ describe("загрузка анкеты и документов с сайта", 
     const fn = vi.fn(async () => new Response("", { status: 503 })) as unknown as typeof fetch;
     const r = await fetchSiteApplication("s1", fn);
     expect(r).toEqual({ ok: false, added: 0, error: "HTTP 503" });
-    expect(db.serviceUpdates.at(-1)).toEqual({ siteFetchError: "HTTP 503", siteFetchTries: { increment: 1 } });
+    expect(db.serviceUpdates.at(-1)).toEqual({ siteFetchError: "HTTP 503", siteFetchTries: { increment: 1 }, siteFetchNextAt: expect.any(Date) });
+  });
+
+  it("следующая попытка — с растущей паузой (аудит 4.5), успешная загрузка её сбрасывает", async () => {
+    const before = Date.now();
+    await fetchSiteApplication("s1", vi.fn(async () => new Response("", { status: 503 })) as unknown as typeof fetch);
+    const next = db.serviceUpdates.at(-1)?.siteFetchNextAt as Date;
+    // первая неудача — пауза 1 минута
+    expect(next.getTime() - before).toBeGreaterThanOrEqual(60_000 - 50);
+    expect(next.getTime() - before).toBeLessThan(2 * 60_000);
+    const { fn } = siteFetch(application([]), {});
+    expect((await fetchSiteApplication("s1", fn)).ok).toBe(true);
+    expect(db.serviceUpdates.at(-1)).toMatchObject({ siteFetchNeeded: false, siteFetchTries: 0, siteFetchNextAt: null });
   });
 });

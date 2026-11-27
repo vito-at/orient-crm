@@ -10,7 +10,7 @@ import { ValidationError } from "@/lib/leads/service";
 import { SERVICE_TYPES } from "@/lib/constants";
 import { getTelegram, telegramBot } from "@/lib/chats/telegram";
 import { notify } from "@/lib/notify";
-import { enqueueMessageEvent, enqueueStatusEvent, fetchSiteApplication } from "@/lib/orient-visa";
+import { enqueueMessageEvent, enqueueStatusEvent, fetchSiteApplication, retrySiteEvents } from "@/lib/orient-visa";
 import { DOC_MAX, FINAL_VISA, VISA_STATUSES, ensureLeadServices, guessMime, requirementsFor, serviceScope } from "@/lib/visa";
 import { docFileFields, logDocAccess } from "@/lib/doc-files";
 
@@ -127,8 +127,9 @@ export async function setVisaStatusAction(serviceId: string, input: VisaStatusIn
     if (st === s.status && !text && !portalReference) return;
     const toClient = site && (input.toClient ?? true);
     const now = new Date();
-    await prisma.$transaction([
-      prisma.leadService.update({
+    // этап и событие для сайта — в одной транзакции: при сбое между ними клиент не остался бы без нового этапа
+    await prisma.$transaction(async (tx) => {
+      await tx.leadService.update({
         where: { id: s.id },
         data: {
           status: st,
@@ -137,21 +138,25 @@ export async function setVisaStatusAction(serviceId: string, input: VisaStatusIn
           ...(portalReference ? { portalReference } : {}),
           ...(user.role === "VISA" && !s.assigneeId ? { assigneeId: user.id } : {}),
         },
-      }),
-      prisma.visaEvent.create({ data: { serviceId: s.id, userId: user.id, status: st === s.status ? null : st, comment: text, toClient: toClient && !!text } }),
-      prisma.leadHistory.create({ data: { leadId: s.leadId, userId: user.id, field: "visa", newValue: `Виза${s.country ? `: ${s.country}` : ""} — ${STATUS_RU[st]}${text ? ` (${text})` : ""}` } }),
-    ]);
-    // сайт Orient Visa: этап, комментарий клиенту, отклонённые документы, номер на портале, файл визы / отказа
-    if (site && (st !== s.status || (toClient && text) || portalReference)) {
-      await enqueueStatusEvent(s, {
-        status: st,
-        comment: toClient ? text : null,
-        rejectedDocuments: st === "DOCS_REQUESTED" ? (input.rejectedDocuments ?? []).filter((x) => typeof x === "string").slice(0, 100) : [],
-        portalReference: portalReference ?? s.portalReference,
-        fileDocumentId,
-        proofType,
       });
-    }
+      await tx.visaEvent.create({ data: { serviceId: s.id, userId: user.id, status: st === s.status ? null : st, comment: text, toClient: toClient && !!text } });
+      await tx.leadHistory.create({ data: { leadId: s.leadId, userId: user.id, field: "visa", newValue: `Виза${s.country ? `: ${s.country}` : ""} — ${STATUS_RU[st]}${text ? ` (${text})` : ""}` } });
+      // сайт Orient Visa: этап, комментарий клиенту, отклонённые документы, номер на портале, файл визы / отказа
+      if (site && (st !== s.status || (toClient && text) || portalReference)) {
+        await enqueueStatusEvent(
+          s,
+          {
+            status: st,
+            comment: toClient ? text : null,
+            rejectedDocuments: st === "DOCS_REQUESTED" ? (input.rejectedDocuments ?? []).filter((x) => typeof x === "string").slice(0, 100) : [],
+            portalReference: portalReference ?? s.portalReference,
+            fileDocumentId,
+            proofType,
+          },
+          tx,
+        );
+      }
+    });
     // менеджеру лида — что изменилось по визе его клиента
     if (s.lead.managerId && s.lead.managerId !== user.id && st !== s.status) {
       await notify([{ userId: s.lead.managerId, type: "visa", key: `visa:${s.id}:${st}:${now.getTime()}`, link: `/leads/${s.leadId}`, data: { name: s.lead.name, status: st } }]);
@@ -169,8 +174,10 @@ export async function sendClientMessageAction(serviceId: string, message: string
     if (!s.externalId) throw new ValidationError("err.notSiteApplication");
     const text = message.trim().slice(0, 2000);
     if (!text) throw new ValidationError("err.commentEmpty");
-    await prisma.visaEvent.create({ data: { serviceId: s.id, userId: user.id, comment: text, toClient: true } });
-    await enqueueMessageEvent(s, text);
+    await prisma.$transaction(async (tx) => {
+      await tx.visaEvent.create({ data: { serviceId: s.id, userId: user.id, comment: text, toClient: true } });
+      await enqueueMessageEvent(s, text, tx);
+    });
     revalidate(s.leadId, s.id);
   });
 }
@@ -182,6 +189,8 @@ export async function refetchSiteAction(serviceId: string) {
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
     if (!s.externalId) throw new ValidationError("err.notSiteApplication");
+    // ручная загрузка начинает счёт неудач заново: если и она не удастся, воркер снова будет повторять сам
+    await prisma.leadService.update({ where: { id: s.id }, data: { siteFetchTries: 0, siteFetchNextAt: null } });
     const r = await fetchSiteApplication(s.id);
     revalidate(s.leadId, s.id);
     if (!r.ok) throw new ValidationError("err.siteFetch", { error: r.error ?? "" });
@@ -215,11 +224,27 @@ export async function takeVisaAction(serviceId: string) {
     const user = await requireUser();
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
-    await prisma.leadService.update({ where: { id: s.id }, data: { assigneeId: user.id, ...(s.status === "NEW" ? { status: "IN_PROGRESS", statusAt: new Date() } : {}) } });
-    if (s.status === "NEW") {
-      await prisma.visaEvent.create({ data: { serviceId: s.id, userId: user.id, status: "IN_PROGRESS" } });
-      await enqueueStatusEvent(s, { status: "IN_PROGRESS" });
-    }
+    // исполнитель, этап и событие для сайта — вместе; «В процессе» ставит только тот, кто успел первым
+    await prisma.$transaction(async (tx) => {
+      const moved = s.status === "NEW" ? (await tx.leadService.updateMany({ where: { id: s.id, status: "NEW" }, data: { status: "IN_PROGRESS", statusAt: new Date() } })).count > 0 : false;
+      await tx.leadService.update({ where: { id: s.id }, data: { assigneeId: user.id } });
+      if (moved) {
+        await tx.visaEvent.create({ data: { serviceId: s.id, userId: user.id, status: "IN_PROGRESS" } });
+        await enqueueStatusEvent(s, { status: "IN_PROGRESS" }, tx);
+      }
+    });
+    revalidate(s.leadId, s.id);
+  });
+}
+
+/** «Повторить отправку» на карточке визы: события, на которых остановились автоповторы, отправляются снова */
+export async function retrySiteEventsAction(serviceId: string) {
+  return runAction(async () => {
+    const user = await requireUser();
+    if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
+    const s = await getService(user, serviceId);
+    if (!s.externalId) throw new ValidationError("err.notSiteApplication");
+    await retrySiteEvents(s.id);
     revalidate(s.leadId, s.id);
   });
 }

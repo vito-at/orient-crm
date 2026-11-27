@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { eventHeaders, hmacHex, retryDelayMs, signedFileUrl, verifyFileSignature } from "@/lib/orient-visa";
+import { eventHeaders, hmacHex, retryDelayMs, shouldStopRetrying, signedFileUrl, STUCK_AFTER, verifyFileSignature } from "@/lib/orient-visa";
 
 describe("интеграция с сайтом Orient Visa", () => {
   it("подпись события — HMAC-SHA256 сырого тела в hex, как проверяет сайт", () => {
@@ -37,5 +37,19 @@ describe("подпись событий для сайта v2", () => {
     expect(h["X-Signature"]).toBe(`v2=${crypto.createHmac("sha256", "secret").update(`1764100000.ev1.${body}`).digest("hex")}`);
     // повтор позже — новое время и новая подпись
     expect(eventHeaders("secret", "ev1", body, 1_764_100_060_000)["X-Signature"]).not.toBe(h["X-Signature"]);
+  });
+});
+
+describe("события на сайт: когда остановить автоповторы (аудит 4.4)", () => {
+  it("сайт отклоняет запрос (4xx) — «требует внимания» после 5 попыток", () => {
+    expect(shouldStopRetrying(STUCK_AFTER.rejected - 1, "HTTP 422: bad")).toBe(false);
+    expect(shouldStopRetrying(STUCK_AFTER.rejected, "HTTP 422: bad")).toBe(true);
+    expect(shouldStopRetrying(5, "HTTP 401: {\"error\":\"bad_signature\"}")).toBe(true);
+  });
+  it("сеть, 5xx, 408 и 429 — временные: повторы дольше", () => {
+    for (const e of ["HTTP 503: down", "HTTP 429: slow down", "HTTP 408: timeout", "fetch failed", "The operation was aborted due to timeout"]) {
+      expect(shouldStopRetrying(STUCK_AFTER.rejected, e), e).toBe(false);
+      expect(shouldStopRetrying(STUCK_AFTER.other, e), e).toBe(true);
+    }
   });
 });

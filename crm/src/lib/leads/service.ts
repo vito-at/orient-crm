@@ -52,6 +52,11 @@ export interface NewLeadInput {
   /** лид администратора: без ответственного не виден менеджерам */
   hiddenFromManagers?: boolean;
   comment?: string | null;
+  /**
+   * Выполнить в той же транзакции, что и создание лида (заявка с сайта создаёт визовую заявку): при ошибке не остаётся
+   * лида без заявки, а повтор с сайта не создаёт второй лид
+   */
+  inTransaction?: (tx: Tx, lead: { id: string }) => Promise<void>;
 }
 
 /**
@@ -158,6 +163,7 @@ export async function createLead(input: NewLeadInput, actorId: string | null) {
       if (input.comment?.trim() && actorId) {
         await tx.comment.create({ data: { leadId: lead.id, authorId: actorId, text: input.comment.trim() } });
       }
+      if (input.inTransaction) await input.inTransaction(tx, lead);
       return lead;
     });
     // уведомление менеджеру, получившему лид (вне транзакции: его сбой не мешает созданию лида)

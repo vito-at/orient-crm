@@ -5,7 +5,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 
-export type NotificationType = "lead" | "task" | "cost" | "trip" | "chat" | "pool" | "ai" | "visa" | "visaNew" | "visaFix" | "visaMsg";
+export type NotificationType = "lead" | "task" | "cost" | "trip" | "chat" | "pool" | "ai" | "visa" | "visaNew" | "visaFix" | "visaMsg" | "visaStuck" | "visaFetch";
 
 export interface NotifyInput {
   userId: string;
