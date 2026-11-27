@@ -4,10 +4,18 @@ import crypto from "node:crypto";
  * Шифрование секретов интеграции (App Secret, Page Access Token) — AES-256-GCM.
  * Ключ берётся из ENCRYPTION_KEY: 64 hex-символа (32 байта) или любая строка (тогда из неё выводится ключ через SHA-256).
  */
+let weakKeyWarned = false;
+
 export function getKey(): Buffer {
   const raw = process.env.ENCRYPTION_KEY;
   if (!raw) throw new Error("ENCRYPTION_KEY не задан в .env");
   if (/^[0-9a-fA-F]{64}$/.test(raw)) return Buffer.from(raw, "hex");
+  // Требовать 64 hex сразу нельзя: всё, что уже зашифровано этим ключом, перестанет расшифровываться.
+  // Слабый ключ (короткое слово) — только предупреждение в журнале; замена ключа — с перешифровкой данных
+  if (!weakKeyWarned && raw.length < 32) {
+    weakKeyWarned = true;
+    console.warn("[crypto] ENCRYPTION_KEY короче 32 символов: паспорта и ключи интеграций защищены слабым ключом. Нужен ключ из `openssl rand -hex 32` с перешифровкой данных.");
+  }
   return crypto.createHash("sha256").update(raw).digest();
 }
 

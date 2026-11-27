@@ -12,9 +12,9 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
   const login = String(formData.get("login") ?? "");
   const code = String(formData.get("code") ?? "").trim();
   try {
-    // визовый специалист сразу попадает в свой кабинет, а без двухфакторного входа — сначала включает его
+    // визовый специалист сразу попадает в свой кабинет; он и администратор без двухфакторного входа сначала включают его
     const u = await prisma.user.findUnique({ where: { login: login.trim().toLowerCase() }, select: { role: true, totpEnabledAt: true } });
-    const redirectTo = u?.role === "VISA" ? (u.totpEnabledAt ? "/visa" : "/account") : "/";
+    const redirectTo = (u?.role === "VISA" || u?.role === "ADMIN") && !u.totpEnabledAt ? "/account" : u?.role === "VISA" ? "/visa" : "/";
     await signIn("credentials", { login, password: String(formData.get("password") ?? ""), ...(code ? { code } : {}), redirectTo });
     return { error: null, login };
   } catch (e) {
