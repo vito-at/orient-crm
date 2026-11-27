@@ -42,6 +42,8 @@ jobs:
       AUTH_SECRET: ci-secret-not-for-production-0123456789
       ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       NEXT_TELEMETRY_DISABLED: "1"
+      # демо-данные создаются только по явному SEED_DEMO=true — проверяем и их
+      SEED_DEMO: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

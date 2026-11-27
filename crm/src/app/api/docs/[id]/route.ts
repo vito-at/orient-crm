@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
-import { getCurrentUser, needsTotp } from "@/lib/session";
+import { docsNeedTotp, getCurrentUser } from "@/lib/session";
 import { documentScope } from "@/lib/visa";
 import { decryptBytes, logDocAccess } from "@/lib/doc-files";
 import { clientIp } from "@/lib/login-guard";
@@ -11,7 +11,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return new NextResponse("Unauthorized", { status: 401 });
-  if (needsTotp(user)) return new NextResponse("Two-factor sign-in required", { status: 403 });
+  // паспорта — только после входа с кодом из приложения (в том числе менеджерам): ссылка открывается в новой вкладке,
+  // поэтому вместо ошибки — «Мой профиль» с объяснением и включением 2FA
+  if (docsNeedTotp(user)) return new NextResponse(null, { status: 303, headers: { Location: "/account?need=docs", "Cache-Control": "no-store" } });
   const { id } = await params;
   const d = await prisma.leadDocument.findFirst({ where: { id, ...documentScope(user) } });
   if (!d) return new NextResponse("Not found", { status: 404 });
