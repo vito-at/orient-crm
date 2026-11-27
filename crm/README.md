@@ -390,38 +390,64 @@ npm run lint      # ESLint
 
 ## Резервные копии и обновление
 
-Ежедневная копия базы (добавьте в `crontab -e` на сервере):
+Копии базы делает `scripts/backup.sh`. В базе всё, в том числе документы клиентов (паспорта в ней зашифрованы ключом `ENCRYPTION_KEY`), поэтому копии базы достаточно.
+
+- **Каждую ночь** — копия `crm-….dump` в `/var/backups/orient-crm`, хранится 7 дней (`BACKUP_DAYS` в `.env`).
+- **Перед каждым обновлением** (`~/orient-deploy.sh`, см. ниже) — копия `update-….dump`, хранятся три последние: если миграция новой версии испортит данные, есть из чего восстановить.
+- **В другом хранилище.** Копии на том же сервере не спасут от его потери. Если в `.env` задан `BACKUP_RCLONE_REMOTE` (хранилище настраивается один раз командой `rclone config`), ночная копия уходит ещё и туда. Для паспортных данных хранилище должно быть в Узбекистане.
+- Если свободного места на диске меньше, чем два размера прошлой копии плюс 1 ГБ, копия не делается: база, которой некуда писать, останавливается.
+
+Ключей в копии нет: храните копию `.env` отдельно (менеджер паролей, флешка в сейфе). Без `ENCRYPTION_KEY` документы из копии не расшифровать.
+
+Ночная копия включается один раз на сервере (от root). Время — по часам сервера: на сервере с UTC 22:00 — это 03:00 по Ташкенту.
 
 ```bash
-0 3 * * * cd /home/ubuntu/orient-crm/crm && docker compose exec -T db pg_dump -U crm crm | gzip > /home/ubuntu/backups/crm-$(date +\%F).sql.gz
+echo '0 22 * * * root cd /root/orient/crm && bash scripts/backup.sh >> /var/log/orient-crm-backup.log 2>&1' > /etc/cron.d/orient-crm-backup
 ```
 
-Обновление приложения:
+Проверить, что копия делается (в конце — размер копии):
+
+```bash
+cd ~/orient/crm && bash scripts/backup.sh && ls -lh /var/backups/orient-crm
+```
+
+Восстановление из копии заменяет всю базу. Сначала остановите приложение и воркер, потом восстановите и запустите снова (вместо `crm-ДАТА.dump` — имя нужной копии):
+
+```bash
+cd ~/orient/crm && docker compose stop app worker
+docker compose exec -T db pg_restore -U crm -d crm --clean --if-exists --single-transaction --no-owner < /var/backups/orient-crm/crm-ДАТА.dump
+docker compose --profile https up -d
+```
+
+Обновление вручную:
 
 ```bash
 git pull
-docker compose --profile https up -d --build   # миграции применятся автоматически
+bash scripts/backup.sh --before-update
+docker compose --profile https up -d --build   # миграции применятся автоматически, воркер запустится после них
 ```
 
 ### Автообновление после мерджа
 
-Workflow `.github/workflows/crm-deploy.yml` после каждого пуша в рабочую ветку (`claude/determined-ritchie-kij49y`) подключается к серверу по SSH и запускает `~/orient-deploy.sh` (`git pull` + `docker compose --profile https up -d --build`), затем проверяет, что `https://crm.orienttravel.uz/login` отвечает. Его можно запустить и вручную: **Actions → CRM Deploy → Run workflow**.
+Workflow `.github/workflows/crm-deploy.yml` запускается, когда для пуша в рабочую ветку (`claude/determined-ritchie-kij49y`) прошли проверки CRM CI: тесты, сборка и миграции на чистой базе. Если проверки не прошли, сервер не обновляется. Workflow подключается к серверу по SSH и запускает `~/orient-deploy.sh` (копия базы, `git pull` и `docker compose --profile https up -d --build`), затем проверяет, что `https://crm.orienttravel.uz/login` отвечает. Его можно запустить и вручную: **Actions → CRM Deploy → Run workflow**.
 
 Настройка выполняется один раз. На сервере:
 
 ```bash
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/github_deploy -C github-deploy
-printf '#!/bin/sh\nset -e\ncd ~/orient\ngit pull --ff-only\ncd crm\ndocker compose --profile https up -d --build\ndocker image prune -f\n' > ~/orient-deploy.sh && chmod +x ~/orient-deploy.sh
+printf '#!/bin/sh\nset -e\ncd ~/orient\ngit pull --ff-only\ncd crm\nbash scripts/backup.sh --before-update\ndocker compose --profile https up -d --build\ndocker image prune -f\n' > ~/orient-deploy.sh && chmod +x ~/orient-deploy.sh
 echo "command=\"$HOME/orient-deploy.sh\",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty $(cat ~/.ssh/github_deploy.pub)" >> ~/.ssh/authorized_keys
+cat /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-Ключ ограничен командой `command=…`: с ним можно только запустить обновление, войти в консоль или выполнить что-то другое нельзя.
+Ключ ограничен командой `command=…`: с ним можно только запустить обновление, войти в консоль или выполнить что-то другое нельзя. Если копия базы перед обновлением не получилась, обновление останавливается, а CRM продолжает работать на старой версии.
 
-В GitHub откройте **Settings → Secrets and variables → Actions** и добавьте два секрета:
+В GitHub откройте **Settings → Secrets and variables → Actions** и добавьте три секрета:
 
 - `DEPLOY_HOST` — IP сервера;
-- `DEPLOY_SSH_KEY` — содержимое `~/.ssh/github_deploy` (закрытый ключ).
+- `DEPLOY_SSH_KEY` — содержимое `~/.ssh/github_deploy` (закрытый ключ);
+- `DEPLOY_HOST_KEY` — строка, которую вывела последняя команда (открытый ключ сервера, начинается с `ssh-ed25519`). С ним GitHub подключается только к этому серверу. Без него обновление работает, но ключ сервера не проверяется, и в журнале workflow появляется предупреждение.
 
-Пока секреты не заданы, workflow пропускает обновление с предупреждением.
+Пока `DEPLOY_HOST` и `DEPLOY_SSH_KEY` не заданы, workflow пропускает обновление с предупреждением.
 
 > **Храните `ENCRYPTION_KEY` в надёжном месте.** Без него сохранённые токены Meta не расшифровать, и их придётся вводить заново.

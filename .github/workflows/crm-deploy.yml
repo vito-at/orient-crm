@@ -1,19 +1,21 @@
 name: CRM Deploy
 
-# Автообновление сервера после мерджа в рабочую ветку.
+# Автообновление сервера после мерджа в рабочую ветку — только когда для этого коммита прошли тесты (CRM CI).
 # На сервере ключ разрешает только запуск ~/orient-deploy.sh (git pull + docker compose up --build),
 # поэтому из GitHub нельзя выполнить на сервере ничего другого.
-# Секреты репозитория: DEPLOY_HOST (IP сервера) и DEPLOY_SSH_KEY (закрытый ключ github_deploy).
+# Секреты репозитория: DEPLOY_HOST (IP сервера), DEPLOY_SSH_KEY (закрытый ключ github_deploy) и
+# DEPLOY_HOST_KEY (открытый ключ сервера — строка из /etc/ssh/ssh_host_ed25519_key.pub): с ним GitHub
+# подключается только к нашему серверу, а не к тому, кто подменил его адрес.
 
 on:
-  push:
-    branches:
-      - claude/determined-ritchie-kij49y
-    paths:
-      - "crm/**"
-      - "links/index.html"
-      - ".github/workflows/crm-deploy.yml"
+  workflow_run:
+    workflows: ["CRM CI"]
+    types: [completed]
+    branches: [claude/determined-ritchie-kij49y]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 # одно обновление за раз; новое ждёт, пока закончится предыдущее
 concurrency:
@@ -23,6 +25,8 @@ concurrency:
 jobs:
   deploy:
     name: Обновление сервера
+    # тесты на пуш в рабочую ветку прошли (проверки PR сюда не попадают) или запуск вручную
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -39,19 +43,48 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Обновление (git pull + docker compose up --build)
+      # Сервер скачивает последнюю версию ветки. Если после проверенного коммита в ветку уже пришли изменения CRM,
+      # их тесты ещё идут: обновление сделает их собственный запуск, когда они пройдут.
+      - name: Проверенный коммит — последний в ветке
+        id: fresh
         if: steps.cfg.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTED: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          go=true
+          if [ -n "$TESTED" ]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --jq .commit.sha)
+            if [ "$head" != "$TESTED" ]; then
+              files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$TESTED...$head" --jq '.files[].filename')
+              if printf '%s\n' "$files" | grep -qE '^(crm/|links/|\.github/workflows/crm-(ci|deploy)\.yml$)'; then
+                echo "::notice::В ветке уже есть более новый коммит ${head:0:7} с изменениями CRM — сервер обновится после его тестов"
+                go=false
+              fi
+            fi
+          fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"
+
+      - name: Обновление (git pull + docker compose up --build)
+        if: steps.cfg.outputs.ready == 'true' && steps.fresh.outputs.go == 'true'
         env:
           HOST: ${{ secrets.DEPLOY_HOST }}
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
-          ssh-keyscan -t ed25519 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/deploy -o BatchMode=yes -o ServerAliveInterval=30 "root@$HOST"
+          if [ -n "$HOST_KEY" ]; then
+            printf '%s %s\n' "$HOST" "$(printf '%s' "$HOST_KEY" | tr -d '\r' | head -1)" > ~/.ssh/known_hosts
+          else
+            echo "::warning::Секрет DEPLOY_HOST_KEY не задан — ключ сервера не проверяется (см. crm/README.md, «Автообновление после мерджа»)"
+            ssh-keyscan -t ed25519 "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 "root@$HOST"
 
       - name: Проверка, что CRM отвечает
-        if: steps.cfg.outputs.ready == 'true'
+        if: steps.cfg.outputs.ready == 'true' && steps.fresh.outputs.go == 'true'
         run: |
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' https://crm.orienttravel.uz/login || true)
