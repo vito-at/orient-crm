@@ -63,8 +63,20 @@ export async function encryptStoredDocuments(batch = 20): Promise<number> {
 }
 
 /**
- * Срок хранения: через docRetentionDays дней после выдачи визы / отказа удаляются файлы документов и анкета с сайта.
- * Записи о документах (тип, имя файла, кто загрузил) остаются с пометкой «удалён по сроку хранения».
+ * Удалить файлы документов и анкету с сайта одной заявки. Записи о документах (тип, имя файла, кто загрузил)
+ * остаются с пометкой «удалён по сроку хранения»; в журнал доступа — «удаление по сроку».
+ */
+export async function purgeServiceDocuments(tx: Prisma.TransactionClient, serviceId: string, now = new Date()): Promise<number> {
+  const docs = await tx.leadDocument.findMany({ where: { serviceId, purgedAt: null }, select: { id: true, serviceId: true, fileName: true } });
+  if (docs.length) await tx.leadDocument.updateMany({ where: { id: { in: docs.map((d) => d.id) } }, data: { data: Buffer.alloc(0), purgedAt: now } });
+  await tx.leadService.update({ where: { id: serviceId }, data: { siteDataEnc: null, purgedAt: now } });
+  await logDocAccess(docs, "purge", null, null, tx);
+  return docs.length;
+}
+
+/**
+ * Срок хранения: через docRetentionDays дней после выдачи визы / отказа или отмены заявки на сайте удаляются файлы
+ * документов и анкета с сайта (purgeServiceDocuments).
  */
 export async function purgeExpiredDocuments(now = new Date()): Promise<{ services: number; documents: number }> {
   const s = await prisma.appSettings.findUnique({ where: { id: 1 }, select: { docRetentionDays: true } });
@@ -72,18 +84,17 @@ export async function purgeExpiredDocuments(now = new Date()): Promise<{ service
   if (days <= 0) return { services: 0, documents: 0 };
   const before = new Date(now.getTime() - days * 86_400_000);
   const services = await prisma.leadService.findMany({
-    where: { type: "VISA", status: { in: ["APPROVED", "REJECTED"] }, statusAt: { lt: before }, OR: [{ purgedAt: null }, { documents: { some: { purgedAt: null } } }] },
-    select: { id: true, documents: { where: { purgedAt: null }, select: { id: true, serviceId: true, fileName: true } } },
+    where: {
+      type: "VISA",
+      AND: [
+        { OR: [{ status: { in: ["APPROVED", "REJECTED"] }, statusAt: { lt: before } }, { cancelledAt: { lt: before } }] },
+        { OR: [{ purgedAt: null }, { documents: { some: { purgedAt: null } } }] },
+      ],
+    },
+    select: { id: true },
     take: 50,
   });
   let documents = 0;
-  for (const svc of services) {
-    await prisma.$transaction(async (tx) => {
-      await tx.leadDocument.updateMany({ where: { id: { in: svc.documents.map((d) => d.id) } }, data: { data: Buffer.alloc(0), purgedAt: now } });
-      await tx.leadService.update({ where: { id: svc.id }, data: { siteDataEnc: null, purgedAt: now } });
-      await logDocAccess(svc.documents, "purge", null, null, tx);
-    });
-    documents += svc.documents.length;
-  }
+  for (const svc of services) documents += await prisma.$transaction((tx) => purgeServiceDocuments(tx, svc.id, now));
   return { services: services.length, documents };
 }

@@ -9,7 +9,7 @@ import type { Prisma, VisaStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { guessMime } from "@/lib/mime";
-import { docFileFields, logDocAccess } from "@/lib/doc-files";
+import { docFileFields, logDocAccess, purgeServiceDocuments } from "@/lib/doc-files";
 import { notify } from "@/lib/notify";
 
 /** Запись в базу: обычный клиент Prisma или транзакция (событие пишется вместе со сменой этапа) */
@@ -169,6 +169,42 @@ async function notifyVisaProblem(serviceId: string, type: "visaStuck" | "visaFet
   const admins = (await prisma.user.findMany({ where: { role: "ADMIN", isActive: true }, select: { id: true } })).map((u) => u.id);
   const to = [...new Set([...(s.assigneeId ? [s.assigneeId] : []), ...admins])];
   await notify(to.map((userId) => ({ userId, type, key: `${key}:${userId}`, link: `/visa/${serviceId}`, data: { name: s.lead.name } })));
+}
+
+// ——— Отмена заявки на сайте ———
+
+export const SITE_CANCEL_REASONS = ["refunded", "cancelled", "account_deleted"] as const;
+export type SiteCancelReason = (typeof SITE_CANCEL_REASONS)[number];
+
+const CANCEL_NOTE: Record<SiteCancelReason, string> = {
+  refunded: "Заявка отменена на сайте: клиенту вернули деньги",
+  cancelled: "Заявка отменена на сайте",
+  account_deleted: "Клиент удалил аккаунт на сайте: документы и анкета удалены",
+};
+
+/**
+ * Сайт отменил оплаченную заявку (docs/orient-visa-integration.md, «Отмена, возврат и удаление аккаунта»): работа по визе
+ * прекращается, заявка закрывается, исполнитель (или все визовые специалисты) получает уведомление. Клиент удалил
+ * аккаунт — документы и анкета удаляются сразу, иначе — по сроку хранения после отмены. Повтор ничего не меняет.
+ * null — заявки с таким externalId в CRM нет.
+ */
+export async function cancelSiteApplication(externalId: string, reason: SiteCancelReason, now = new Date()): Promise<{ id: string; applied: boolean } | null> {
+  const s = await prisma.leadService.findUnique({
+    where: { externalId },
+    select: { id: true, cancelledAt: true, cancelReason: true, assigneeId: true, lead: { select: { name: true } } },
+  });
+  if (!s) return null;
+  const purge = reason === "account_deleted";
+  // уже отменена: повтор или другая причина ничего не меняют, кроме удаления аккаунта (документы нужно удалить)
+  if (s.cancelledAt && (s.cancelReason === reason || !purge)) return { id: s.id, applied: false };
+  await prisma.$transaction(async (tx) => {
+    await tx.leadService.update({ where: { id: s.id }, data: { cancelledAt: s.cancelledAt ?? now, cancelReason: reason, closed: true, siteFetchNeeded: false } });
+    await tx.visaEvent.create({ data: { serviceId: s.id, comment: CANCEL_NOTE[reason] } });
+    if (purge) await purgeServiceDocuments(tx, s.id, now);
+  });
+  const to = s.assigneeId ? [s.assigneeId] : (await prisma.user.findMany({ where: { role: "VISA", isActive: true }, select: { id: true } })).map((u) => u.id);
+  await notify(to.map((userId) => ({ userId, type: "visaCancelled" as const, key: `visaCancelled:${s.id}:${reason}:${userId}`, link: `/visa/${s.id}`, data: { name: s.lead.name } })));
+  return { id: s.id, applied: true };
 }
 
 // ——— Анкета и документы с сайта ———

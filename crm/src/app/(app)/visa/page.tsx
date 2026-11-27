@@ -26,11 +26,16 @@ export default async function VisaPage({ searchParams }: { searchParams: Promise
 
   const where: Prisma.LeadServiceWhereInput = {
     ...handedVisa,
-    ...(status === "done" ? { status: { in: FINAL_VISA } } : status && VISA_STATUSES.includes(status as VisaStatus) ? { status: status as VisaStatus } : { status: { notIn: FINAL_VISA } }),
+    // отменённые на сайте заявки (возврат, отмена, удаление аккаунта) — среди завершённых, в работе их нет
+    ...(status === "done"
+      ? { OR: [{ status: { in: FINAL_VISA } }, { cancelledAt: { not: null } }] }
+      : status && VISA_STATUSES.includes(status as VisaStatus)
+        ? { status: status as VisaStatus, cancelledAt: null }
+        : { status: { notIn: FINAL_VISA }, cancelledAt: null }),
     ...(source === "SALES" || source === "WEBSITE" ? { source } : {}),
     ...(mine ? { assigneeId: user.id } : {}),
   };
-  const [rows, counts] = await Promise.all([
+  const [rows, counts, cancelled] = await Promise.all([
     prisma.leadService.findMany({
       where,
       orderBy: [{ statusAt: "desc" }],
@@ -41,7 +46,8 @@ export default async function VisaPage({ searchParams }: { searchParams: Promise
         documents: { select: { docType: true } },
       },
     }),
-    prisma.leadService.groupBy({ by: ["status"], where: handedVisa, _count: { _all: true } }),
+    prisma.leadService.groupBy({ by: ["status"], where: { ...handedVisa, cancelledAt: null }, _count: { _all: true } }),
+    prisma.leadService.count({ where: { ...handedVisa, cancelledAt: { not: null } } }),
   ]);
   const reqs = await requirementsFor(rows);
   const count = (s: VisaStatus) => counts.find((c) => c.status === s)?._count._all ?? 0;
@@ -68,7 +74,7 @@ export default async function VisaPage({ searchParams }: { searchParams: Promise
           </Link>
         ))}
         <Link href={href({ s: "done" })} className={tab(status === "done")}>
-          {t("visa.done")} · {count("APPROVED") + count("REJECTED")}
+          {t("visa.done")} · {count("APPROVED") + count("REJECTED") + cancelled}
         </Link>
       </div>
       <div className="mb-4 flex flex-wrap gap-1.5 text-sm">
@@ -117,7 +123,11 @@ export default async function VisaPage({ searchParams }: { searchParams: Promise
                       <td className="px-3 py-2.5">{r.country ?? "—"}</td>
                       <td className="px-3 py-2.5 text-xs">{r.source === "WEBSITE" ? t("visa.fromSite") : t("visa.fromManager", { name: r.lead.manager?.name ?? "—" })}</td>
                       <td className="px-3 py-2.5">
-                        <VisaStatusBadge status={r.status} />
+                        {r.cancelledAt ? (
+                          <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs whitespace-nowrap text-red-700 dark:bg-red-950/40 dark:text-red-300">{t("visa.cancelled")}</span>
+                        ) : (
+                          <VisaStatusBadge status={r.status} />
+                        )}
                       </td>
                       <td className={cn("px-3 py-2.5 tabular-nums", need.length && have === need.length ? "text-emerald-600" : "")}>
                         {have}/{need.length}

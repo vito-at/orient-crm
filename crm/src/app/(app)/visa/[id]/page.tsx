@@ -91,6 +91,13 @@ export default async function VisaApplicationPage({ params }: { params: Promise<
           ) : undefined
         }
       />
+      {s.cancelledAt && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          {t(s.cancelReason === "refunded" ? "ov.cancelledRefunded" : s.cancelReason === "account_deleted" ? "ov.cancelledDeleted" : "ov.cancelledCancelled", {
+            at: formatDateTime(s.cancelledAt),
+          })}
+        </div>
+      )}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <div className="space-y-4">
           <Card>
