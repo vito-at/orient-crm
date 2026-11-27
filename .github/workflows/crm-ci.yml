@@ -1,14 +1,20 @@
 name: CRM CI
 
+# После зелёной проверки пуша в рабочую ветку запускается CRM Deploy (обновление сервера), поэтому сюда входят
+# и файлы, которые выкладываются без сборки (links/), и сам workflow выкладки.
 on:
   push:
     paths:
       - "crm/**"
+      - "links/**"
       - ".github/workflows/crm-ci.yml"
+      - ".github/workflows/crm-deploy.yml"
   pull_request:
     paths:
       - "crm/**"
+      - "links/**"
       - ".github/workflows/crm-ci.yml"
+      - ".github/workflows/crm-deploy.yml"
 
 concurrency:
   group: crm-ci-${{ github.ref }}

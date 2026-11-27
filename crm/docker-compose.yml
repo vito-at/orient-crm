@@ -35,7 +35,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-crm}:${POSTGRES_PASSWORD:-crm}@db:5432/${POSTGRES_DB:-crm}?schema=public
-    command: ["npm", "run", "worker"]
+    # Сначала миграции (их же запускает app; prisma берёт блокировку, поэтому одновременный запуск безопасен),
+    # потом воркер: новая версия не должна обращаться к колонкам, которых в базе ещё нет
+    command: ["sh", "-c", "npx prisma migrate deploy && npm run worker"]
     depends_on:
       app:
         condition: service_started
@@ -43,10 +45,13 @@ services:
   # Сайт проверки документов по QR-коду для Ипотека-банка — отдельный проект vito-at/qr-code-creator.
   # Образ собирается прямо из его репозитория (ветка main); Caddy ниже отдаёт его по домену VERIFY_DOMAIN.
   # Запускается только на сервере (вместе с Caddy, профиль https). Данные — в томе qrdata.
+  # Своя сеть qr: из этого контейнера не видны база, приложение и воркер CRM, только Caddy.
   qr-code-app:
     build: https://github.com/vito-at/qr-code-creator.git#main
     restart: unless-stopped
     profiles: ["https"]
+    networks:
+      qr: {}
     environment:
       BASE_URL: https://${VERIFY_DOMAIN:-hujjat-ipotekabank.uz}
       ADMIN_PATH: boshqaruv
@@ -74,8 +79,14 @@ services:
       - ../links:/srv/links:ro   # страница-визитка (после git pull обновляется сама)
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      default: {}
+      qr: {}
     depends_on:
       - app
+
+networks:
+  qr: {}
 
 volumes:
   pgdata:
