@@ -58,7 +58,7 @@ export function SiteCard({ serviceId, info, data }: { serviceId: string; info: S
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className={info.fetchError ? "text-red-600" : "text-muted-foreground"}>
           {info.fetchError ? t("ov.fetchError", { error: info.fetchError }) : info.fetchPending ? t("ov.fetchPending") : info.fetchedAt ? t("ov.fetchedAt", { at: info.fetchedAt }) : t("ov.fetchPending")}
-          {info.fetchStopped !== null && ` ${t("ov.fetchStopped", { n: info.fetchStopped })}`}
+          {info.fetchStopped !== null && <span className="block">{t("ov.fetchStopped", { n: info.fetchStopped })}</span>}
         </span>
         <Button
           size="sm"
