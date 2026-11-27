@@ -7,6 +7,7 @@ import { authConfig } from "./auth.config";
 import { clientIp, loginBlocked, loginFailed, loginSucceeded } from "@/lib/login-guard";
 import { decrypt } from "@/lib/crypto";
 import { consumeTotpStep, verifyTotp } from "@/lib/totp";
+import { sessionStamp } from "@/lib/session-stamp";
 
 const credentialsSchema = z.object({
   login: z.string().trim().min(1),
@@ -44,7 +45,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) throw new InvalidCredentials();
         const login = parsed.data.login.toLowerCase();
         const ip = clientIp(request?.headers);
-        // подбор пароля: после 5 ошибок вход для этой пары «логин + IP» закрыт на 15 минут
+        // подбор пароля: ограничения по паре «логин + IP», по IP и по логину (lib/login-guard.ts)
         if (loginBlocked(login, ip)) throw new InvalidCredentials();
         const user = await prisma.user.findUnique({ where: { login } });
         // для несуществующего логина тоже проверяем пароль (по фиктивному хэшу): иначе по скорости ответа видно, какие логины есть
@@ -64,7 +65,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           }
         }
         loginSucceeded(login, ip);
-        return { id: user.id, name: user.name, role: user.role, login: user.login, totp: !!user.totpEnabledAt };
+        return { id: user.id, name: user.name, role: user.role, login: user.login, totp: !!user.totpEnabledAt, stamp: sessionStamp(user) };
       },
     }),
   ],
