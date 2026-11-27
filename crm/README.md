@@ -399,10 +399,10 @@ npm run lint      # ESLint
 
 Ключей в копии нет: храните копию `.env` отдельно (менеджер паролей, флешка в сейфе). Без `ENCRYPTION_KEY` документы из копии не расшифровать.
 
-Ночная копия включается один раз на сервере (от root):
+Ночная копия включается один раз на сервере (от root). Время — по часам сервера: на сервере с UTC 22:00 — это 03:00 по Ташкенту.
 
 ```bash
-echo '30 3 * * * root cd /root/orient/crm && bash scripts/backup.sh >> /var/log/orient-crm-backup.log 2>&1' > /etc/cron.d/orient-crm-backup
+echo '0 22 * * * root cd /root/orient/crm && bash scripts/backup.sh >> /var/log/orient-crm-backup.log 2>&1' > /etc/cron.d/orient-crm-backup
 ```
 
 Проверить, что копия делается (в конце — размер копии):
