@@ -91,6 +91,11 @@ async function handle(body: Record<string, unknown>): Promise<NextResponse> {
   const errors = [!name && "name", !phone && "phone", !country && "country"].filter(Boolean);
   if (errors.length) return NextResponse.json({ ok: false, error: `Required: ${errors.join(", ")}` }, { status: 422 });
 
+  const paid = Number(body.paidAmount);
+  const agency = body.agency && typeof body.agency === "object" ? (body.agency as Record<string, unknown>) : null;
+  // лид, визовая заявка и первая запись истории — одной транзакцией: при сбое посередине не остаётся лида без заявки,
+  // и повтор с сайта (тот же externalId) не создаёт второй лид (аудит 4.9)
+  const out: { service?: { id: string; externalNumber: string | null } } = {};
   const makeLead = () =>
     createLead(
       {
@@ -105,50 +110,51 @@ async function handle(body: Record<string, unknown>): Promise<NextResponse> {
         travelFrom: date("travelFrom"),
         travelTo: date("travelTo"),
         ...(comment ? { formAnswers: [{ key: "comment", label: "Комментарий с сайта", value: comment }] } : {}),
+        inTransaction: async (tx, lead) => {
+          const service = await tx.leadService.create({
+            data: {
+              leadId: lead.id,
+              type: "VISA",
+              country,
+              source: "WEBSITE",
+              handedAt: new Date(),
+              note: comment,
+              externalId,
+              externalNumber: str("externalNumber", 50) || null,
+              externalUrl: /^https?:\/\//.test(str("externalUrl", 500)) ? str("externalUrl", 500) : null,
+              visaType: str("visaType", 200) || null,
+              urgent: body.urgent === true,
+              paidAmount: Number.isFinite(paid) && paid >= 0 ? paid : null,
+              agencyName: typeof agency?.name === "string" ? agency.name.slice(0, 200) : null,
+              agencyInn: typeof agency?.inn === "string" ? agency.inn.slice(0, 20) : null,
+              nationality: iso2(body.nationality),
+              siteFetchNeeded: !!externalId,
+            },
+            select: { id: true, externalNumber: true },
+          });
+          await tx.visaEvent.create({ data: { serviceId: service.id, status: "NEW", comment: externalId ? `Заявка с сайта Orient Visa${service.externalNumber ? ` ${service.externalNumber}` : ""}, оплачена` : "Заявка с сайта" } });
+          out.service = service;
+        },
       },
       null,
     );
-  // клиент с этим телефоном мог появиться в ту же секунду из другой заявки — тогда вторая попытка найдёт его
-  const lead = await makeLead().catch((e: { code?: string }) => {
-    if (e.code === "P2002") return makeLead();
-    throw e;
-  });
-  if (!lead) return NextResponse.json({ ok: false, error: "Not created" }, { status: 500 });
-  const paid = Number(body.paidAmount);
-  const agency = body.agency && typeof body.agency === "object" ? (body.agency as Record<string, unknown>) : null;
-  let service;
   try {
-    service = await prisma.leadService.create({
-      data: {
-        leadId: lead.id,
-        type: "VISA",
-        country,
-        source: "WEBSITE",
-        handedAt: new Date(),
-        note: comment,
-        externalId,
-        externalNumber: str("externalNumber", 50) || null,
-        externalUrl: /^https?:\/\//.test(str("externalUrl", 500)) ? str("externalUrl", 500) : null,
-        visaType: str("visaType", 200) || null,
-        urgent: body.urgent === true,
-        paidAmount: Number.isFinite(paid) && paid >= 0 ? paid : null,
-        agencyName: typeof agency?.name === "string" ? agency.name.slice(0, 200) : null,
-        agencyInn: typeof agency?.inn === "string" ? agency.inn.slice(0, 20) : null,
-        nationality: iso2(body.nationality),
-        siteFetchNeeded: !!externalId,
-      },
+    // клиент с этим телефоном мог появиться в ту же секунду из другой заявки — тогда вторая попытка найдёт его
+    await makeLead().catch((e: { code?: string }) => {
+      if (e.code === "P2002") return makeLead();
+      throw e;
     });
   } catch (e) {
-    // одновременный повтор с тем же externalId: заявка уже создана параллельным запросом — лишний лид убираем
+    // одновременный повтор с тем же externalId: заявка уже создана параллельным запросом (наша транзакция откатилась)
     if ((e as { code?: string }).code === "P2002" && externalId) {
-      await prisma.lead.delete({ where: { id: lead.id } }).catch(() => undefined);
       const dup = await prisma.leadService.findUnique({ where: { externalId }, select: { id: true } });
       if (dup) return NextResponse.json({ ok: true, id: dup.id }, { status: 200 });
     }
     throw e;
   }
+  const service = out.service;
+  if (!service) return NextResponse.json({ ok: false, error: "Not created" }, { status: 500 });
   if (externalId) after(() => fetchSiteApplication(service.id).then(() => undefined, (e) => console.error("orient-visa fetch:", e)));
-  await prisma.visaEvent.create({ data: { serviceId: service.id, status: "NEW", comment: externalId ? `Заявка с сайта Orient Visa${service.externalNumber ? ` ${service.externalNumber}` : ""}, оплачена` : "Заявка с сайта" } });
   await notify((await visaUserIds()).map((userId) => ({ userId, type: "visaNew" as const, key: `visaNew:${service.id}`, link: `/visa/${service.id}`, data: { name, product: country } })));
   return NextResponse.json({ ok: true, id: service.id }, { status: 201 });
 }

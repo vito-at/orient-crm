@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DocChecklist } from "@/components/visa/doc-checklist";
 import { VisaPanel } from "@/components/visa/visa-panel";
 import { SiteCard } from "@/components/visa/site-card";
-import { readSiteData } from "@/lib/orient-visa";
+import { readSiteData, SITE_FETCH_MAX_TRIES } from "@/lib/orient-visa";
 import { toNum } from "@/lib/money";
 import { VisaStatusBadge } from "@/components/visa/visa-status";
 import { prisma } from "@/lib/db";
@@ -29,7 +29,7 @@ export default async function VisaApplicationPage({ params }: { params: Promise<
     where: { id, ...handedVisa },
     include: {
       assignee: { select: { id: true, name: true } },
-      siteEvents: { orderBy: { createdAt: "desc" }, take: 20, select: { sentAt: true, lastError: true } },
+      siteEvents: { orderBy: { createdAt: "desc" }, take: 20, select: { sentAt: true, lastError: true, stuckAt: true } },
       documents: { orderBy: { createdAt: "asc" }, select: { id: true, fileName: true, docType: true, externalId: true, travelerName: true } },
       events: { orderBy: { createdAt: "desc" }, include: { user: { select: { name: true } } } },
       lead: {
@@ -146,7 +146,13 @@ export default async function VisaApplicationPage({ params }: { params: Promise<
                     fetchedAt: s.siteFetchedAt ? formatDateTime(s.siteFetchedAt) : null,
                     fetchError: s.siteFetchError,
                     fetchPending: s.siteFetchNeeded,
-                    events: { pending: pendingEvents.length, failed: pendingEvents.find((e) => e.lastError)?.lastError ?? null, lastSentAt: lastSent ? formatDateTime(lastSent) : null },
+                    fetchStopped: s.siteFetchNeeded && s.siteFetchTries >= SITE_FETCH_MAX_TRIES ? s.siteFetchTries : null,
+                    events: {
+                      pending: pendingEvents.length,
+                      failed: pendingEvents.find((e) => e.lastError)?.lastError ?? null,
+                      stuck: pendingEvents.some((e) => e.stuckAt),
+                      lastSentAt: lastSent ? formatDateTime(lastSent) : null,
+                    },
                   }}
                 />
               </CardContent>

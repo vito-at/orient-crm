@@ -4,7 +4,7 @@ import { useTransition } from "react";
 import { toast } from "sonner";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { refetchSiteAction } from "@/app/(app)/visa/actions";
+import { refetchSiteAction, retrySiteEventsAction } from "@/app/(app)/visa/actions";
 import type { SiteData } from "@/lib/orient-visa";
 import { useI18n } from "@/i18n/client";
 
@@ -20,7 +20,10 @@ export interface SiteInfo {
   fetchedAt: string | null;
   fetchError: string | null;
   fetchPending: boolean;
-  events: { pending: number; failed: string | null; lastSentAt: string | null };
+  /** автозагрузка остановлена после стольких неудач (null — работает) */
+  fetchStopped: number | null;
+  /** stuck — на событии остановились автоповторы («требует внимания»), нужна кнопка «Повторить отправку» */
+  events: { pending: number; failed: string | null; stuck: boolean; lastSentAt: string | null };
 }
 
 /** Заявка с сайта Orient Visa: сведения о заказе, анкета туристов, состояние обмена с сайтом */
@@ -55,6 +58,7 @@ export function SiteCard({ serviceId, info, data }: { serviceId: string; info: S
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className={info.fetchError ? "text-red-600" : "text-muted-foreground"}>
           {info.fetchError ? t("ov.fetchError", { error: info.fetchError }) : info.fetchPending ? t("ov.fetchPending") : info.fetchedAt ? t("ov.fetchedAt", { at: info.fetchedAt }) : t("ov.fetchPending")}
+          {info.fetchStopped !== null && ` ${t("ov.fetchStopped", { n: info.fetchStopped })}`}
         </span>
         <Button
           size="sm"
@@ -77,13 +81,34 @@ export function SiteCard({ serviceId, info, data }: { serviceId: string; info: S
           </a>
         )}
       </div>
-      <p className={info.events.failed ? "text-xs text-red-600" : "text-xs text-muted-foreground"}>
-        {info.events.pending
-          ? t("ov.eventsPending", { n: info.events.pending }) + (info.events.failed ? ` — ${info.events.failed}` : "")
-          : info.events.lastSentAt
-            ? t("ov.eventsSent", { at: info.events.lastSentAt })
-            : t("ov.eventsNone")}
-      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className={info.events.failed || info.events.stuck ? "text-xs text-red-600" : "text-xs text-muted-foreground"}>
+          {info.events.stuck
+            ? t("ov.eventsStuck", { error: info.events.failed ?? "" })
+            : info.events.pending
+              ? t("ov.eventsPending", { n: info.events.pending }) + (info.events.failed ? ` — ${info.events.failed}` : "")
+              : info.events.lastSentAt
+                ? t("ov.eventsSent", { at: info.events.lastSentAt })
+                : t("ov.eventsNone")}
+        </p>
+        {info.events.stuck && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto"
+            disabled={pending}
+            onClick={() =>
+              start(async () => {
+                const r = await retrySiteEventsAction(serviceId);
+                if (!r.ok) return void toast.error(r.error);
+                toast.success(t("ov.eventsRetried"));
+              })
+            }
+          >
+            <RefreshCw className={pending ? "animate-spin" : undefined} /> {t("ov.retryEvents")}
+          </Button>
+        )}
+      </div>
       {data?.contact && (
         <div className="rounded-md bg-muted/40 p-2 text-xs">
           {t("ov.contact")}: {[data.contact.name, data.contact.phone, data.contact.email, data.contact.telegram && `Telegram ${data.contact.telegram}`].filter(Boolean).join(" · ")}

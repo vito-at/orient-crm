@@ -8,7 +8,7 @@ import { RoleProvider } from "@/components/layout/role-context";
 import { ShiftBanner } from "@/components/layout/shift-banner";
 import { ActivityTracker } from "@/components/layout/shift-toggle";
 import { activeToday } from "@/lib/shift";
-import { formatDate, formatNumber, toInputDate } from "@/lib/format";
+import { formatDate, formatDateTime, formatNumber, toInputDate } from "@/lib/format";
 import { isRateStale } from "@/lib/rates";
 import { getI18n } from "@/i18n/server";
 import { prisma } from "@/lib/db";
@@ -50,6 +50,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   const tokenProblem = meta?.enabled && !meta.tokenValid;
+  // воркер отмечается раз в минуту: больше 5 минут тишины — завис или упал (до первой отметки после выкладки не показываем)
+  const workerDownSince = user.role === "ADMIN" && settings?.workerSeenAt && Date.now() - settings.workerSeenAt.getTime() > 5 * 60_000 ? settings.workerSeenAt : null;
 
   return (
     <RoleProvider role={user.role} costRate={Number(settings?.usdRateCost ?? 0)} saleRate={Number(settings?.usdRate ?? 0)}>
@@ -77,6 +79,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             ) : (
               <span>{t("banner.tellAdmin")}</span>
             )}
+          </div>
+        )}
+        {workerDownSince && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 lg:px-8">
+            <AlertTriangle className="size-5 shrink-0" />
+            <div className="flex-1">
+              <b>{t("banner.workerDown", { at: formatDateTime(workerDownSince) })}</b> {t("banner.workerDownText")}
+            </div>
           </div>
         )}
         {pendingCosts > 0 && user.role === "ADMIN" && (

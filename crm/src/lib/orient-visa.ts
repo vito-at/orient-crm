@@ -10,6 +10,10 @@ import { prisma } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/crypto";
 import { guessMime } from "@/lib/mime";
 import { docFileFields, logDocAccess } from "@/lib/doc-files";
+import { notify } from "@/lib/notify";
+
+/** Запись в базу: обычный клиент Prisma или транзакция (событие пишется вместе со сменой этапа) */
+type Db = Prisma.TransactionClient;
 
 export interface OrientVisaConfig {
   url: string;
@@ -64,8 +68,8 @@ export interface StatusEventInput {
   proofType?: "OFFICIAL" | "EMAIL" | "SCREENSHOT" | null;
 }
 
-/** Событие о смене этапа: только для заявок с сайта */
-export async function enqueueStatusEvent(service: { id: string; externalId: string | null }, e: StatusEventInput) {
+/** Событие о смене этапа: только для заявок с сайта. db — транзакция смены этапа: событие и этап пишутся вместе */
+export async function enqueueStatusEvent(service: { id: string; externalId: string | null }, e: StatusEventInput, db: Db = prisma) {
   if (!service.externalId) return;
   const payload: Record<string, unknown> = { externalId: service.externalId, serviceId: service.id, type: "status", status: e.status };
   if (e.comment) payload.comment = e.comment;
@@ -74,12 +78,12 @@ export async function enqueueStatusEvent(service: { id: string; externalId: stri
   // ссылка на файл подписывается в момент отправки (у каждой попытки — свежая)
   if (e.fileDocumentId) payload.fileDocumentId = e.fileDocumentId;
   if (e.proofType) payload.proofType = e.proofType;
-  await prisma.siteEvent.create({ data: { serviceId: service.id, payload: payload as Prisma.InputJsonValue } });
+  await db.siteEvent.create({ data: { serviceId: service.id, payload: payload as Prisma.InputJsonValue } });
 }
 
-export async function enqueueMessageEvent(service: { id: string; externalId: string | null }, text: string) {
+export async function enqueueMessageEvent(service: { id: string; externalId: string | null }, text: string, db: Db = prisma) {
   if (!service.externalId) return;
-  await prisma.siteEvent.create({ data: { serviceId: service.id, payload: { externalId: service.externalId, type: "message", text } } });
+  await db.siteEvent.create({ data: { serviceId: service.id, payload: { externalId: service.externalId, type: "message", text } } });
 }
 
 /** Пауза перед следующей попыткой: 1, 2, 4… минут, не больше 6 часов */
@@ -88,18 +92,32 @@ export const retryDelayMs = (attempts: number) => Math.min(6 * 60, 2 ** Math.max
 export type FetchFn = typeof fetch;
 
 /**
+ * Когда прекратить автоповторы события и показать «требует внимания» (кнопка «Повторить» на карточке визы):
+ * сайт отвечает 4xx (кроме 408/429) — повтор не поможет, хватит 5 попыток (~30 минут); сеть и 5xx — 15 попыток (~2 суток).
+ */
+export const STUCK_AFTER = { rejected: 5, other: 15 } as const;
+export function shouldStopRetrying(attempts: number, error: string): boolean {
+  const code = /^HTTP (\d{3})/.exec(error)?.[1];
+  const rejected = !!code && code.startsWith("4") && code !== "408" && code !== "429";
+  return attempts >= (rejected ? STUCK_AFTER.rejected : STUCK_AFTER.other);
+}
+
+/**
  * Отправить события, которым пора. Внутри одной заявки — строго по порядку:
  * пока не ушло раннее событие, следующие не отправляются (сайт применяет статусы последовательно).
+ * Событие, которое «требует внимания» (stuckAt), тоже держит следующие события своей заявки, пока его не повторят.
  */
 export async function processSiteEvents(now = new Date(), fetchFn: FetchFn = fetch): Promise<number> {
   const cfg = await orientVisaConfig();
   if (!cfg) return 0;
-  const pending = await prisma.siteEvent.findMany({ where: { sentAt: null }, orderBy: { createdAt: "asc" }, take: 100 });
+  // все неотправленные (их мало): если взять только 100 самых старых, застрявшие события одних заявок
+  // закрыли бы очередь остальным
+  const pending = await prisma.siteEvent.findMany({ where: { sentAt: null }, orderBy: { createdAt: "asc" }, take: 2000 });
   const blocked = new Set<string>();
   let sent = 0;
   for (const ev of pending) {
     if (blocked.has(ev.serviceId)) continue;
-    if (ev.nextAt > now) {
+    if (ev.stuckAt || ev.nextAt > now) {
       blocked.add(ev.serviceId);
       continue;
     }
@@ -126,11 +144,31 @@ export async function processSiteEvents(now = new Date(), fetchFn: FetchFn = fet
       await prisma.siteEvent.update({ where: { id: ev.id }, data: { sentAt: new Date(), attempts: { increment: 1 }, lastError: null } });
       sent++;
     } else {
-      await prisma.siteEvent.update({ where: { id: ev.id }, data: { attempts: { increment: 1 }, lastError: error.slice(0, 500), nextAt: new Date(now.getTime() + retryDelayMs(ev.attempts + 1)) } });
+      const stuck = shouldStopRetrying(ev.attempts + 1, error);
+      await prisma.siteEvent.update({
+        where: { id: ev.id },
+        data: { attempts: { increment: 1 }, lastError: error.slice(0, 500), nextAt: new Date(now.getTime() + retryDelayMs(ev.attempts + 1)), ...(stuck ? { stuckAt: now } : {}) },
+      });
+      if (stuck) await notifyVisaProblem(ev.serviceId, "visaStuck", `visaStuck:${ev.id}`);
       blocked.add(ev.serviceId);
     }
   }
   return sent;
+}
+
+/** «Повторить» на карточке визы: события заявки снова отправляются, счётчик попыток с нуля */
+export async function retrySiteEvents(serviceId: string, now = new Date()): Promise<number> {
+  const { count } = await prisma.siteEvent.updateMany({ where: { serviceId, sentAt: null }, data: { stuckAt: null, attempts: 0, nextAt: now } });
+  return count;
+}
+
+/** Уведомление о проблеме обмена с сайтом: исполнителю заявки (если есть) и администраторам — один раз на ключ */
+async function notifyVisaProblem(serviceId: string, type: "visaStuck" | "visaFetch", key: string) {
+  const s = await prisma.leadService.findUnique({ where: { id: serviceId }, select: { assigneeId: true, lead: { select: { name: true } } } });
+  if (!s) return;
+  const admins = (await prisma.user.findMany({ where: { role: "ADMIN", isActive: true }, select: { id: true } })).map((u) => u.id);
+  const to = [...new Set([...(s.assigneeId ? [s.assigneeId] : []), ...admins])];
+  await notify(to.map((userId) => ({ userId, type, key: `${key}:${userId}`, link: `/visa/${serviceId}`, data: { name: s.lead.name } })));
 }
 
 // ——— Анкета и документы с сайта ———
@@ -203,10 +241,14 @@ const str = (v: unknown) => (typeof v === "string" ? v : v === null || v === und
 
 /** Забрать анкету и документы заявки с сайта: анкета — зашифрованно в заявку, новые файлы — в документы CRM */
 export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn = fetch): Promise<{ ok: boolean; added: number; error?: string }> {
-  const s = await prisma.leadService.findUnique({ where: { id: serviceId }, select: { id: true, leadId: true, externalId: true } });
+  const s = await prisma.leadService.findUnique({ where: { id: serviceId }, select: { id: true, leadId: true, externalId: true, siteFetchTries: true } });
   if (!s?.externalId) return { ok: false, added: 0, error: "not a site application" };
+  // неудача: счётчик попыток и время следующей (пауза растёт: 1, 2, 4… минут, до 6 часов)
+  const tries = (s.siteFetchTries ?? 0) + 1;
+  const retryAt = () => new Date(Date.now() + retryDelayMs(tries));
   const fail = async (error: string) => {
-    await prisma.leadService.update({ where: { id: s.id }, data: { siteFetchError: error.slice(0, 500), siteFetchTries: { increment: 1 } } });
+    await prisma.leadService.update({ where: { id: s.id }, data: { siteFetchError: error.slice(0, 500), siteFetchTries: { increment: 1 }, siteFetchNextAt: retryAt() } });
+    await notifyFetchStopped(s.id, tries);
     return { ok: false, added: 0, error };
   };
   const cfg = await orientVisaConfig();
@@ -264,8 +306,11 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
       try {
         const res = await fetchFn(d.url, { signal: AbortSignal.timeout(60_000) });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // после переадресаций файл всё равно должен прийти с адреса сайта или его хранилища
+        if (res.url && !isSiteFileUrl(res.url, cfg.url)) throw new Error("файл отдан не с адреса сайта");
+        if (Number(res.headers.get("content-length") ?? 0) > SITE_FILE_MAX) throw new Error("файл больше 25 МБ");
         const body = new Uint8Array(await res.arrayBuffer());
-        if (body.length > 25 * 1024 * 1024) throw new Error("файл больше 25 МБ");
+        if (body.length > SITE_FILE_MAX) throw new Error("файл больше 25 МБ");
         const mime = d.mime || res.headers.get("content-type")?.split(";")[0] || null;
         const ext = mime?.split("/")[1]?.replace("jpeg", "jpg") ?? "bin";
         const fileName = `${(d.title || "document").replace(/[\\/:*?"<>|\r\n]/g, " ").trim()}${t.name ? ` — ${str(t.name)}` : ""}.${ext}`;
@@ -301,8 +346,10 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
       siteFetchedAt: new Date(),
       siteFetchError: errors.length ? errors.join("; ").slice(0, 500) : lost.length ? `Файлы уже удалены с сайта, а в CRM их нет: ${lost.join(", ")}`.slice(0, 500) : null,
       siteFetchTries: errors.length ? { increment: 1 } : 0,
+      siteFetchNextAt: errors.length ? retryAt() : null,
     },
   });
+  if (errors.length) await notifyFetchStopped(s.id, tries);
   // сохранённые файлы подтверждаем сайту — он удаляет их у себя (минимизация данных)
   await acknowledgeSiteDocuments(s.id);
   return { ok: !errors.length, added, error: errors[0] };
@@ -345,13 +392,27 @@ export async function acknowledgePendingSiteDocuments(): Promise<number> {
   return n;
 }
 
-/** Воркер: заявки, у которых надо (заново) забрать анкету — с паузой между неудачными попытками */
+/** Файл с сайта — не больше 25 МБ */
+const SITE_FILE_MAX = 25 * 1024 * 1024;
+/** После стольких неудач подряд воркер перестаёт загружать анкету сам: исполнителю и администраторам уходит уведомление */
+export const SITE_FETCH_MAX_TRIES = 30;
+
+/** Автозагрузка остановилась (столько неудач подряд) — исполнителю и администраторам: нажать «Обновить с сайта» */
+async function notifyFetchStopped(serviceId: string, tries: number) {
+  if (tries === SITE_FETCH_MAX_TRIES) await notifyVisaProblem(serviceId, "visaFetch", `visaFetch:${serviceId}:${Date.now()}`);
+}
+
+/** Воркер: заявки, у которых надо (заново) забрать анкету — по времени следующей попытки, самые давние первыми */
 export async function processSiteFetches(now = new Date()): Promise<number> {
   if (!(await orientVisaConfig())) return 0;
-  const list = await prisma.leadService.findMany({ where: { siteFetchNeeded: true, externalId: { not: null }, siteFetchTries: { lt: 30 } }, select: { id: true, siteFetchTries: true, updatedAt: true }, take: 20 });
+  const list = await prisma.leadService.findMany({
+    where: { siteFetchNeeded: true, externalId: { not: null }, siteFetchTries: { lt: SITE_FETCH_MAX_TRIES }, OR: [{ siteFetchNextAt: null }, { siteFetchNextAt: { lte: now } }] },
+    orderBy: [{ siteFetchNextAt: { sort: "asc", nulls: "first" } }, { createdAt: "asc" }],
+    select: { id: true },
+    take: 20,
+  });
   let done = 0;
   for (const s of list) {
-    if (s.siteFetchTries > 0 && now.getTime() - s.updatedAt.getTime() < retryDelayMs(s.siteFetchTries)) continue;
     if ((await fetchSiteApplication(s.id)).ok) done++;
   }
   return done;

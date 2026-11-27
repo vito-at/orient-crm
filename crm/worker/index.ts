@@ -17,17 +17,17 @@ import { distributeQueue } from "../src/lib/leads/distribution";
 import { endIdleShifts } from "../src/lib/shift";
 import { i18nFor } from "../src/i18n/instance";
 import type { TKey } from "../src/i18n/core";
+import { createJobGuard } from "./guard";
 
 // журнал воркера — по-русски
 const { t } = i18nFor("ru");
 
 const log = (...args: unknown[]) => console.log(new Date().toISOString(), ...args);
-let busy = false;
+/** задачи по расписанию не накладываются, зависшая задача не блокирует свою работу навсегда (worker/guard.ts) */
+const job = createJobGuard(log);
 
 /** Каждую минуту проверяем, не пора ли синхронизироваться (интервал задаётся в настройках) */
 async function tickLeads() {
-  if (busy) return;
-  busy = true;
   try {
     const i = await prisma.metaIntegration.findUnique({ where: { id: 1 } });
     if (!i?.enabled) return;
@@ -40,9 +40,13 @@ async function tickLeads() {
     if (organic) log(`Признак органики получен для ${organic} лидов`);
   } catch (e) {
     log("Ошибка синхронизации лидов:", e);
-  } finally {
-    busy = false;
   }
+}
+
+/** Отметка «воркер жив» раз в минуту: давно не отмечался — администратор видит предупреждение в CRM */
+async function heartbeat() {
+  const now = new Date();
+  await prisma.appSettings.upsert({ where: { id: 1 }, update: { workerSeenAt: now }, create: { id: 1, workerSeenAt: now } });
 }
 
 async function tickSpend() {
@@ -85,39 +89,58 @@ async function tickConversions() {
   }
 }
 
-cron.schedule("* * * * *", tickLeads);
-cron.schedule("*/5 * * * *", tickConversions);
+const leads = job("Лиды Meta", tickLeads);
+cron.schedule("* * * * *", job("Воркер жив", heartbeat));
+cron.schedule("* * * * *", leads);
+cron.schedule("*/5 * * * *", job("Conversions API", tickConversions));
 // напоминания «Спросить, как прошла поездка» — каждый час (задача ставится на 11:00 дня после возвращения)
 // уведомления о просроченных задачах — каждые 10 минут
-cron.schedule("*/10 * * * *", () => void scanNotifications().catch((e) => log("Уведомления:", e)));
+cron.schedule("*/10 * * * *", job("Уведомления", () => scanNotifications()));
 // ИИ-ассистент: страховка, если ответ после вебхука не прошёл (перезапуск, сбой)
 // сайт Orient Visa: события о визах с повторами и загрузка анкет/документов
-cron.schedule("* * * * *", () => void processSiteEvents().catch((e) => log("Orient Visa, события:", e)));
-cron.schedule("* * * * *", () => void processSiteFetches().catch((e) => log("Orient Visa, анкеты:", e)));
+cron.schedule("* * * * *", job("Orient Visa, события", () => processSiteEvents()));
+cron.schedule("* * * * *", job("Orient Visa, анкеты", () => processSiteFetches()));
 // документы клиентов: старые файлы шифруются понемногу, сохранённые с сайта подтверждаются ему (сайт удаляет у себя),
 // по сроку хранения после выдачи визы / отказа паспорта и анкета удаляются (раз в сутки ночью)
-cron.schedule("* * * * *", () =>
-  void encryptStoredDocuments()
-    .then(async (n) => {
-      if (n) log(`Документы зашифрованы: ${n}`);
-      const acked = await acknowledgePendingSiteDocuments();
-      if (acked) log(`Сайту подтверждено получение документов: ${acked}`);
-    })
-    .catch((e) => log("Документы, шифрование/подтверждение:", e)),
+cron.schedule(
+  "* * * * *",
+  job("Документы, шифрование/подтверждение", async () => {
+    const n = await encryptStoredDocuments();
+    if (n) log(`Документы зашифрованы: ${n}`);
+    const acked = await acknowledgePendingSiteDocuments();
+    if (acked) log(`Сайту подтверждено получение документов: ${acked}`);
+  }),
 );
-cron.schedule("23 3 * * *", () => void purgeExpiredDocuments().then((r) => r.services && log("Удалено по сроку хранения:", r)).catch((e) => log("Срок хранения документов:", e)), { timezone: "Asia/Tashkent" });
+cron.schedule(
+  "23 3 * * *",
+  job("Срок хранения документов", async () => {
+    const r = await purgeExpiredDocuments();
+    if (r.services) log("Удалено по сроку хранения:", r);
+  }),
+  { timezone: "Asia/Tashkent" },
+);
 // очередь лидов: страховка раздачи (после действий она идёт сразу)
-cron.schedule("* * * * *", () => void distributeQueue().then((n) => n && log(`Лиды из очереди выданы: ${n}`)).catch((e) => log("Очередь лидов:", e)));
+cron.schedule("* * * * *", job("Очередь лидов", async () => {
+  const n = await distributeQueue();
+  if (n) log(`Лиды из очереди выданы: ${n}`);
+}));
 // «В работе» выключается само, если менеджер час ничего не делал в CRM
-cron.schedule("* * * * *", () => void endIdleShifts().then((n) => n && log(`«В работе» выключено (час без действий): ${n}`)).catch((e) => log("Конец смены:", e)));
-cron.schedule("* * * * *", () => void processAiReplies().catch((e) => log("ИИ-ассистент:", e)));
-cron.schedule("7 * * * *", () => void createTripFollowUps().then((n) => n && log(`Задачи после поездки: ${n}`)).catch((e) => log("Задачи после поездки:", e)));
-cron.schedule("17 * * * *", tickSpend);
-cron.schedule("0 7 * * *", () => tickRate(true), { timezone: "Asia/Tashkent" });
-cron.schedule(`*/30 7-${RATE_RETRY_UNTIL_HOUR - 1} * * *`, () => tickRate(), { timezone: "Asia/Tashkent" });
+cron.schedule("* * * * *", job("Конец смены", async () => {
+  const n = await endIdleShifts();
+  if (n) log(`«В работе» выключено (час без действий): ${n}`);
+}));
+cron.schedule("* * * * *", job("ИИ-ассистент", () => processAiReplies()));
+cron.schedule("7 * * * *", job("Задачи после поездки", async () => {
+  const n = await createTripFollowUps();
+  if (n) log(`Задачи после поездки: ${n}`);
+}));
+cron.schedule("17 * * * *", job("Расходы на рекламу", tickSpend));
+cron.schedule("0 7 * * *", job("Курс USD", () => tickRate(true)), { timezone: "Asia/Tashkent" });
+cron.schedule(`*/30 7-${RATE_RETRY_UNTIL_HOUR - 1} * * *`, job("Курс USD", () => tickRate()), { timezone: "Asia/Tashkent" });
 
 log("Воркер запущен");
-void tickLeads();
+void heartbeat().catch((e) => log("Воркер жив:", e));
+void leads();
 // лиды «Без имени», чьё имя было в своём вопросе формы, — один раз при запуске
 void fixUnnamedLeads()
   .then((n) => n && log(`Имя из ответов формы записано в ${n} лидов`))

@@ -491,6 +491,8 @@ model AppSettings {
   orientVisaSecretEnc String?
   /// через сколько дней после выдачи визы / отказа удалять паспорта и анкету (0 — не удалять)
   docRetentionDays    Int              @default(90)
+  /// воркер отмечается раз в минуту; давно не отмечался — администратор видит предупреждение (воркер завис или упал)
+  workerSeenAt        DateTime?
 }
 
 /// История курсов USD→UZS по дням: суммы пересчитываются по курсу дня операции, поэтому отчёты за прошлые даты не меняются
@@ -915,6 +917,8 @@ model LeadService {
   siteFetchedAt   DateTime?
   siteFetchError  String?
   siteFetchTries  Int       @default(0)
+  /// когда пробовать загрузить анкету снова (пауза растёт после каждой неудачи); null — сразу
+  siteFetchNextAt DateTime?
 
   documents  LeadDocument[]
   events     VisaEvent[]
@@ -1017,6 +1021,8 @@ model SiteEvent {
   nextAt    DateTime    @default(now())
   sentAt    DateTime?
   lastError String?
+  /// автоповторы остановлены после многих ошибок: «требует внимания», на карточке визы кнопка «Повторить»
+  stuckAt   DateTime?
   createdAt DateTime    @default(now())
 
   @@index([sentAt, nextAt])

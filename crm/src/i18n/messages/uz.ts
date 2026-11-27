@@ -41,6 +41,8 @@ export const uz: Messages = {
     metaDownText: "kirish tokeni muddati tugagan yoki bekor qilingan — reklamadan yangi lidlar yuklanmayapti.",
     tellAdmin: "Administratorga xabar bering.",
     updateToken: "Tokenni yangilash",
+    workerDown: "CRM fon vazifalari {at} dan beri ishlamayapti:",
+    workerDownText: "Meta lidlari yuklanmayapti, viza bosqichlari saytga ketmayapti, kurs yangilanmayapti. Serverda workerni qayta ishga tushiring: docker compose restart worker",
   },
   callback: {
     at: "Qayta qo‘ng‘iroq: {date}",
@@ -1114,6 +1116,8 @@ export const uz: Messages = {
     visaFix: "Mijoz viza bo‘yicha tuzatishlarni yubordi: {name}",
     visaMsg: "Viza bo‘yicha mijoz xabari: {name}",
     visaNew: "Yangi viza arizasi: {name}{product}",
+    visaFetch: "Saytdan anketa yuklanmayapti: {name}",
+    visaStuck: "Sayt viza bo‘yicha o‘zgarishlarni qabul qilmayapti: {name}",
   },
   offers: {
     add: "Variant qo‘shish",
@@ -1741,6 +1745,10 @@ export const uz: Messages = {
     eventsNone: "Saytga hali hodisa yuborilmagan",
     eventsPending: "Saytga yetkazilmagan hodisalar: {n}",
     eventsSent: "Sayt oxirgi hodisani {at} da oldi",
+    eventsRetried: "Saytga yuborish qayta boshlandi",
+    eventsStuck: "Sayt bu ariza bo‘yicha o‘zgarishlarni qabul qilmayapti, avtomatik takrorlash to‘xtatildi: {error}",
+    fetchStopped: "{n} ta muvaffaqiyatsiz urinishdan keyin avtoyuklash to‘xtatildi — «Saytdan yangilash»ni bosing",
+    retryEvents: "Qayta yuborish",
     fetchError: "Saytdan olib bo‘lmadi: {error}",
     fetchPending: "Anketa va hujjatlar saytdan yuklanmoqda…",
     fetched: "Saytdan olindi, yangi fayllar: {n}",

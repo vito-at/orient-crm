@@ -41,6 +41,8 @@ export const en: Messages = {
     metaDownText: "the access token has expired or was revoked — new ad leads are not being imported.",
     tellAdmin: "Please tell your administrator.",
     updateToken: "Update token",
+    workerDown: "CRM background jobs have not run since {at}:",
+    workerDownText: "Meta leads are not loaded, visa stages do not reach the website, the rate is not updated. Restart the worker on the server: docker compose restart worker",
   },
   callback: {
     at: "Call back {date}",
@@ -1114,6 +1116,8 @@ export const en: Messages = {
     visaFix: "The client sent visa corrections: {name}",
     visaMsg: "Client message about a visa: {name}",
     visaNew: "New visa application: {name}{product}",
+    visaFetch: "The website form does not load: {name}",
+    visaStuck: "The website does not accept visa changes: {name}",
   },
   offers: {
     add: "Add option",
@@ -1741,6 +1745,10 @@ export const en: Messages = {
     eventsNone: "No events sent yet",
     eventsPending: "Events not yet delivered: {n}",
     eventsSent: "Website received the last event {at}",
+    eventsRetried: "Sending to the website resumed",
+    eventsStuck: "The website does not accept changes for this application, automatic retries stopped: {error}",
+    fetchStopped: "Automatic loading stopped after {n} failed attempts — press “Refresh from website”",
+    retryEvents: "Retry sending",
     fetchError: "Could not fetch from the website: {error}",
     fetchPending: "Loading form and documents from the website…",
     fetched: "Fetched, new files: {n}",
