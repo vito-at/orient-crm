@@ -109,6 +109,7 @@ export async function setVisaStatusAction(serviceId: string, input: VisaStatusIn
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
     if (s.type !== "VISA" || !s.handedAt) throw new AccessError("err.serviceNotFound");
+    if (s.cancelledAt) throw new ValidationError("err.visaCancelled");
     const st = input.status as VisaStatus;
     if (!VISA_STATUSES.includes(st)) throw new ValidationError("err.visaStatus");
     const text = input.comment.trim().slice(0, 2000) || null;
@@ -172,6 +173,7 @@ export async function sendClientMessageAction(serviceId: string, message: string
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
     if (!s.externalId) throw new ValidationError("err.notSiteApplication");
+    if (s.cancelledAt) throw new ValidationError("err.visaCancelled");
     const text = message.trim().slice(0, 2000);
     if (!text) throw new ValidationError("err.commentEmpty");
     await prisma.$transaction(async (tx) => {
@@ -189,6 +191,7 @@ export async function refetchSiteAction(serviceId: string) {
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
     if (!s.externalId) throw new ValidationError("err.notSiteApplication");
+    if (s.cancelledAt) throw new ValidationError("err.visaCancelled");
     // ручная загрузка начинает счёт неудач заново: если и она не удастся, воркер снова будет повторять сам
     await prisma.leadService.update({ where: { id: s.id }, data: { siteFetchTries: 0, siteFetchNextAt: null } });
     const r = await fetchSiteApplication(s.id);
@@ -224,6 +227,7 @@ export async function takeVisaAction(serviceId: string) {
     const user = await requireUser();
     if (user.role !== "VISA" && user.role !== "ADMIN") throw new AccessError();
     const s = await getService(user, serviceId);
+    if (s.cancelledAt) throw new ValidationError("err.visaCancelled");
     // исполнитель, этап и событие для сайта — вместе; «В процессе» ставит только тот, кто успел первым
     await prisma.$transaction(async (tx) => {
       const moved = s.status === "NEW" ? (await tx.leadService.updateMany({ where: { id: s.id, status: "NEW" }, data: { status: "IN_PROGRESS", statusAt: new Date() } })).count > 0 : false;

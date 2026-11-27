@@ -5,7 +5,7 @@ import { createLead } from "@/lib/leads/service";
 import { normalizePhone } from "@/lib/phone";
 import { notify } from "@/lib/notify";
 import { hashSiteKey } from "@/lib/visa";
-import { fetchSiteApplication } from "@/lib/orient-visa";
+import { SITE_CANCEL_REASONS, cancelSiteApplication, fetchSiteApplication } from "@/lib/orient-visa";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +19,9 @@ export const dynamic = "force-dynamic";
  *
  * Сайт Orient Visa (docs/orient-visa-integration.md) дополнительно присылает externalId — ключ идемпотентности:
  * повтор с тем же externalId дубль не создаёт и возвращает 200 с тем же id; "event": "corrections_submitted" —
- * клиент прислал исправления: заявка возвращается в работу, анкета и документы забираются заново.
+ * клиент прислал исправления: заявка возвращается в работу, анкета и документы забираются заново;
+ * "event": "cancelled", "reason": "refunded" | "cancelled" | "account_deleted" — заявку отменили на сайте
+ * (возврат денег, отмена, клиент удалил аккаунт): работа прекращается, 404 — такой заявки в CRM нет.
  */
 export async function POST(req: NextRequest) {
   const settings = await prisma.appSettings.findUnique({ where: { id: 1 }, select: { siteApiKeyHash: true } });
@@ -73,6 +75,13 @@ async function handle(body: Record<string, unknown>): Promise<NextResponse> {
   const travelers = Number.isInteger(body.travelers) && (body.travelers as number) > 0 && (body.travelers as number) <= 50 ? (body.travelers as number) : null;
   const externalId = str("externalId", 100) || null;
   const visaUserIds = async () => (await prisma.user.findMany({ where: { role: "VISA", isActive: true }, select: { id: true } })).map((u) => u.id);
+  if (body.event === "cancelled") {
+    const reason = SITE_CANCEL_REASONS.find((r) => r === body.reason);
+    if (!externalId || !reason) return NextResponse.json({ ok: false, error: "Required: externalId, reason" }, { status: 422 });
+    const r = await cancelSiteApplication(externalId, reason);
+    if (!r) return NextResponse.json({ ok: false, error: "Not found" }, { status: 404 });
+    return NextResponse.json({ ok: true, id: r.id, result: r.applied ? "applied" : "duplicate" }, { status: 200 });
+  }
   if (externalId) {
     const existing = await prisma.leadService.findUnique({ where: { externalId }, select: { id: true, assigneeId: true, lead: { select: { name: true } } } });
     if (existing) {

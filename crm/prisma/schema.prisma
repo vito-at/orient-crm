@@ -919,6 +919,10 @@ model LeadService {
   siteFetchTries  Int       @default(0)
   /// когда пробовать загрузить анкету снова (пауза растёт после каждой неудачи); null — сразу
   siteFetchNextAt DateTime?
+  /// заявку отменили на сайте (возврат денег, отмена, клиент удалил аккаунт): работа по ней прекращается
+  cancelledAt     DateTime?
+  /// причина отмены: refunded | cancelled | account_deleted
+  cancelReason    String?
 
   documents  LeadDocument[]
   events     VisaEvent[]
