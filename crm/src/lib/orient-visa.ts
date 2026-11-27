@@ -181,6 +181,24 @@ export function readSiteData(enc: string | null | undefined): SiteData | null {
   }
 }
 
+/**
+ * Ссылка на файл из анкеты сайта: скачиваем только с адреса сайта (`/api/integration/files/…`, зашифрованные файлы)
+ * или с его хранилища `files.<домен сайта>` (старые незашифрованные файлы). Чужой адрес не скачиваем.
+ */
+export function isSiteFileUrl(fileUrl: string, siteUrl: string): boolean {
+  let f: URL, site: URL;
+  try {
+    f = new URL(fileUrl);
+    site = new URL(siteUrl);
+  } catch {
+    return false;
+  }
+  if (f.protocol !== site.protocol || f.username || f.password) return false;
+  if (f.origin === site.origin) return true;
+  const host = site.hostname.replace(/^www\./, "");
+  return f.hostname === `files.${host}` && (f.port === "" || f.port === site.port);
+}
+
 const str = (v: unknown) => (typeof v === "string" ? v : v === null || v === undefined ? null : String(v));
 
 /** Забрать анкету и документы заявки с сайта: анкета — зашифрованно в заявку, новые файлы — в документы CRM */
@@ -239,6 +257,10 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
         if (d.transferred) lost.push(d.title);
         continue;
       }
+      if (!isSiteFileUrl(d.url, cfg.url)) {
+        errors.push(`${d.title}: ссылка не с адреса сайта`);
+        continue;
+      }
       try {
         const res = await fetchFn(d.url, { signal: AbortSignal.timeout(60_000) });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -247,12 +269,20 @@ export async function fetchSiteApplication(serviceId: string, fetchFn: FetchFn =
         const mime = d.mime || res.headers.get("content-type")?.split(";")[0] || null;
         const ext = mime?.split("/")[1]?.replace("jpeg", "jpg") ?? "bin";
         const fileName = `${(d.title || "document").replace(/[\\/:*?"<>|\r\n]/g, " ").trim()}${t.name ? ` — ${str(t.name)}` : ""}.${ext}`;
-        const doc = await prisma.leadDocument.create({
-          data: { serviceId: s.id, leadId: s.leadId, docType: d.title || "Документ", fileName: fileName.slice(0, 200), mime: guessMime(fileName, mime), ...docFileFields(body), externalId: d.id, travelerName: str(t.name) },
-          select: { id: true, serviceId: true, fileName: true },
-        });
-        await logDocAccess([doc], "upload", null);
+        // уникальность (serviceId, externalId): если этот же документ параллельно сохранил воркер или кнопка
+        // «Обновить с сайта», второй копии не будет
+        const doc = await prisma.leadDocument
+          .create({
+            data: { serviceId: s.id, leadId: s.leadId, docType: d.title || "Документ", fileName: fileName.slice(0, 200), mime: guessMime(fileName, mime), ...docFileFields(body), externalId: d.id, travelerName: str(t.name) },
+            select: { id: true, serviceId: true, fileName: true },
+          })
+          .catch((e: unknown) => {
+            if ((e as { code?: string }).code === "P2002") return null;
+            throw e;
+          });
         have.add(d.id);
+        if (!doc) continue;
+        await logDocAccess([doc], "upload", null);
         added++;
       } catch (e) {
         errors.push(`${d.title}: ${e instanceof Error ? e.message : String(e)}`);
