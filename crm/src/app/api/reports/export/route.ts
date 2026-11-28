@@ -23,6 +23,8 @@ export async function GET(req: NextRequest) {
       tables = await dashboardTables(f);
       break;
     case "clients":
+      // список клиентов с телефонами — только администратору, как и выгрузка лидов (решение владельца 28.11.2026)
+      if (user.role !== "ADMIN") return new NextResponse("Forbidden", { status: 403 });
       tables = [await clientsTable(f)];
       break;
     case "funnel":

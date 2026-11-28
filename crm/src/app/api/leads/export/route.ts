@@ -10,10 +10,14 @@ import { getI18n } from "@/i18n/server";
 
 export const dynamic = "force-dynamic";
 
-/** Список лидов с текущими фильтрами в Excel (менеджер — только свои и нераспределённые) */
+/**
+ * Список лидов с текущими фильтрами в Excel — только администратору (решение владельца 28.11.2026: уходящий менеджер
+ * не унесёт базу клиентов с телефонами).
+ */
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return new NextResponse("Unauthorized", { status: 401 });
+  if (user.role !== "ADMIN") return new NextResponse("Forbidden", { status: 403 });
   const { t } = await getI18n();
   const params = Object.fromEntries(req.nextUrl.searchParams.entries());
   const leads = await prisma.lead.findMany({

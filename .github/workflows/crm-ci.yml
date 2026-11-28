@@ -78,6 +78,9 @@ jobs:
             --shadow-database-url "postgresql://crm:crm@localhost:5432/crm_shadow" --exit-code
       - name: Seed с демо-данными
         run: npm run db:seed
+      # запросы, которые проверяет только настоящая база (сроки хранения документов): после миграций и seed
+      - name: Тесты с базой
+        run: npm run test:db
       - name: Production-сборка
         run: npm run build
 

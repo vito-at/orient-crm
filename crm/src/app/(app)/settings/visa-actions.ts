@@ -70,12 +70,15 @@ export async function saveOrientVisaAction(input: { url: string; key: string; se
   });
 }
 
-/** Срок хранения паспортов и анкет после выдачи визы / отказа (дней, 0 — не удалять) */
-export async function saveRetentionAction(days: number) {
+/** Сроки хранения документов, дней (0 — не удалять): visa — после выдачи визы / отказа, trip — после возвращения клиента
+ * (туры, авиабилеты, прочее), idle — брошенные заявки и файлы из переписки без движения */
+export type RetentionDays = { visa: number; trip: number; idle: number };
+
+export async function saveRetentionAction(days: RetentionDays) {
   return runAction(async () => {
     await requireAdmin();
-    if (!Number.isInteger(days) || days < 0 || days > 3650) throw new ValidationError("err.retentionDays");
-    await prisma.appSettings.update({ where: { id: 1 }, data: { docRetentionDays: days } });
+    for (const d of [days.visa, days.trip, days.idle]) if (!Number.isInteger(d) || d < 0 || d > 3650) throw new ValidationError("err.retentionDays");
+    await prisma.appSettings.update({ where: { id: 1 }, data: { docRetentionDays: days.visa, tripDocRetentionDays: days.trip, idleDocRetentionDays: days.idle } });
     revalidatePath("/settings");
   });
 }

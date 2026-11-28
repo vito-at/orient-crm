@@ -115,7 +115,7 @@ cron.schedule(
   "23 3 * * *",
   job("Срок хранения документов", async () => {
     const r = await purgeExpiredDocuments();
-    if (r.services) log("Удалено по сроку хранения:", r);
+    if (r.services || r.chatFiles) log("Удалено по сроку хранения:", r);
   }),
   { timezone: "Asia/Tashkent" },
 );
