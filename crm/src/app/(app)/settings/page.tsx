@@ -305,7 +305,7 @@ async function VisaTab() {
         pending={pendingEvents}
         failed={failedEvent?.lastError ?? null}
       />
-      <RetentionCard days={settings.docRetentionDays} />
+      <RetentionCard days={{ visa: settings.docRetentionDays, trip: settings.tripDocRetentionDays, idle: settings.idleDocRetentionDays }} />
     </div>
   );
 }

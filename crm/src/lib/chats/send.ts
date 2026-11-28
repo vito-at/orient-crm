@@ -11,6 +11,7 @@ import { ValidationError } from "@/lib/leads/service";
 import { igCanReply } from "./instagram";
 import { getTelegram, telegramBot, type FetchFn } from "./telegram";
 import { previewText } from "./store";
+import { chatFileUrl } from "./file-url";
 
 export async function sendToInstagram(conv: Conversation, text: string, fetchFn?: GraphFetch): Promise<string> {
   const secrets = readSecrets(await getIntegration());
@@ -112,7 +113,7 @@ export async function sendChatFile(
   const name = file.name.replace(/[\r\n"]/g, "").slice(0, 200) || "file";
   const token = crypto.randomBytes(18).toString("base64url");
   await prisma.chatFile.create({ data: { token, name, mime: file.mime || "application/octet-stream", size: file.data.length, data: Buffer.from(file.data) } });
-  const url = `/api/chats/out/${token}`;
+  const url = chatFileUrl(token);
 
   let externalId = "";
   let captionId: string | null = null;

@@ -64,7 +64,8 @@ export default async function ReportsPage({ searchParams }: { searchParams: Prom
       {tab !== "plans" && (
         <div className="mb-5">
           <Suspense>
-            <ReportFilters managers={managers} exportHref={`/api/reports/export?tab=${tab}${tab === "ads" ? `&level=${level}` : ""}`} />
+            {/* список клиентов с телефонами выгружает только администратор */}
+            <ReportFilters managers={managers} exportHref={tab === "clients" && !isAdmin ? undefined : `/api/reports/export?tab=${tab}${tab === "ads" ? `&level=${level}` : ""}`} />
           </Suspense>
         </div>
       )}

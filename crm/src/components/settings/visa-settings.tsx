@@ -6,10 +6,11 @@ import { Copy, FileCheck2, Globe, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, Input, NativeSelect, Textarea } from "@/components/ui/input";
-import { generateSiteKeyAction, revokeSiteKeyAction, saveOrientVisaAction, saveRequirementsAction, saveRetentionAction } from "@/app/(app)/settings/visa-actions";
+import { generateSiteKeyAction, revokeSiteKeyAction, saveOrientVisaAction, saveRequirementsAction, saveRetentionAction, type RetentionDays } from "@/app/(app)/settings/visa-actions";
 import { SERVICE_TYPES, VISA_COUNTRIES } from "@/lib/constants";
 import { serviceLabel } from "@/i18n/labels";
 import { useI18n } from "@/i18n/client";
+import type { TKey } from "@/i18n/core";
 
 export interface RequirementList {
   type: string;
@@ -242,11 +243,16 @@ export function OrientVisaCard({ url, hasKey, hasSecret, fromEnv, pending, faile
   );
 }
 
-/** Срок хранения паспортов и анкет: через N дней после выдачи визы / отказа воркер удаляет файлы и анкету */
-export function RetentionCard({ days }: { days: number }) {
+/** Сроки хранения документов клиентов: по ним воркер ночью удаляет файлы, анкеты и файлы из переписки (lib/doc-files.ts) */
+export function RetentionCard({ days }: { days: RetentionDays }) {
   const { t } = useI18n();
-  const [v, setV] = useState(String(days));
+  const [v, setV] = useState({ visa: String(days.visa), trip: String(days.trip), idle: String(days.idle) });
   const [busy, start] = useTransition();
+  const fields: { key: keyof RetentionDays; label: TKey }[] = [
+    { key: "visa", label: "docset.retentionDays" },
+    { key: "trip", label: "docset.retentionTripDays" },
+    { key: "idle", label: "docset.retentionIdleDays" },
+  ];
   return (
     <Card>
       <CardHeader>
@@ -255,14 +261,16 @@ export function RetentionCard({ days }: { days: number }) {
       <CardContent className="space-y-3 text-sm">
         <p className="text-muted-foreground">{t("docset.retentionHint")}</p>
         <div className="flex flex-wrap items-end gap-2">
-          <Field label={t("docset.retentionDays")}>
-            <Input type="number" min={0} max={3650} value={v} onChange={(e) => setV(e.target.value)} className="w-32" />
-          </Field>
+          {fields.map((f) => (
+            <Field key={f.key} label={t(f.label)}>
+              <Input type="number" min={0} max={3650} value={v[f.key]} onChange={(e) => setV({ ...v, [f.key]: e.target.value })} className="w-32" />
+            </Field>
+          ))}
           <Button
             disabled={busy}
             onClick={() =>
               start(async () => {
-                const r = await saveRetentionAction(Number(v));
+                const r = await saveRetentionAction({ visa: Number(v.visa), trip: Number(v.trip), idle: Number(v.idle) });
                 if (!r.ok) return void toast.error(r.error);
                 toast.success(t("common.saved"));
               })

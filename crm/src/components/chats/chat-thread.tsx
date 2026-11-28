@@ -17,6 +17,8 @@ export interface ChatAttachmentView {
   /** готовая ссылка: Instagram CDN или прокси вложений Telegram */
   src: string | null;
   name?: string | null;
+  /** файл удалён по сроку хранения */
+  purged?: boolean;
 }
 
 export interface ChatMessageView {
@@ -43,7 +45,7 @@ export function ChatAutoRefresh({ ms = 5000 }: { ms?: number }) {
 
 function Attachment({ a }: { a: ChatAttachmentView }) {
   const { t } = useI18n();
-  if (!a.src) return <div className="text-xs italic opacity-70">{t("chats.attachmentUnavailable")}</div>;
+  if (!a.src) return <div className="text-xs italic opacity-70">{t(a.purged ? "chats.attachmentPurged" : "chats.attachmentUnavailable")}</div>;
   if (a.type === "image" || a.type === "sticker")
     return (
       <a href={a.src} target="_blank" rel="noreferrer">
